@@ -1,7 +1,8 @@
 import { useState, useCallback } from 'react';
 import { Navbar, Container, Alert, Spinner } from 'react-bootstrap';
 import { FileDropZone } from './components/FileDropZone';
-import { LEFViewer } from './components/LEFViewer';
+// Canvas版ビューア (SVG版は components/LEFViewer.tsx に残置)
+import { LEFViewer } from './components/LEFViewerCanvas';
 import { LEFParser } from './utils/lefParser';
 import type { LEFData } from './types/lef';
 import 'bootstrap/dist/css/bootstrap.min.css';
@@ -48,46 +49,46 @@ function App() {
   }, [handleFileLoad]);
 
   return (
-    <div className="min-vh-100 bg-light">
-      <Navbar bg="dark" variant="dark" className="mb-0">
-        <Container>
+    <div className="App" style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <Navbar bg="dark" variant="dark" expand="lg">
+        <Container fluid>
           <Navbar.Brand>
-            <i className="bi bi-cpu me-2"></i>
+            <i className="bi bi-diagram-3 me-2"></i>
             LEF File Viewer
           </Navbar.Brand>
-          <Navbar.Text>
-            EDA Layout Visualization Tool
-          </Navbar.Text>
+          <small className="text-light">EDA Layout Visualization Tool</small>
         </Container>
       </Navbar>
 
-      {error && (
-        <Container className="mt-3">
-          <Alert variant="danger" dismissible onClose={() => setError(null)}>
-            <Alert.Heading>Error</Alert.Heading>
-            {error}
-          </Alert>
-        </Container>
-      )}
+      <div style={{ flex: 1, overflow: 'hidden' }}>
+        {loading && (
+          <Container className="mt-4">
+            <div className="text-center">
+              <Spinner animation="border" role="status">
+                <span className="visually-hidden">Loading...</span>
+              </Spinner>
+              <p className="mt-2">Parsing LEF file...</p>
+            </div>
+          </Container>
+        )}
 
-      {loading && (
-        <Container className="mt-3">
-          <div className="text-center">
-            <Spinner animation="border" role="status">
-              <span className="visually-hidden">Loading...</span>
-            </Spinner>
-            <div className="mt-2">Parsing LEF file...</div>
-          </div>
-        </Container>
-      )}
+        {error && (
+          <Container className="mt-4">
+            <Alert variant="danger">
+              <Alert.Heading>Error</Alert.Heading>
+              {error}
+            </Alert>
+          </Container>
+        )}
 
-      {!lefData && !loading && (
-        <FileDropZone onFileLoad={handleFileLoad} onUrlLoad={handleUrlLoad} />
-      )}
+        {!lefData && !loading && !error && (
+          <FileDropZone onFileLoad={handleFileLoad} onUrlLoad={handleUrlLoad} />
+        )}
 
-      {lefData && !loading && (
-        <LEFViewer lefData={lefData} filename={filename} />
-      )}
+        {lefData && !loading && (
+          <LEFViewer lefData={lefData} filename={filename} />
+        )}
+      </div>
     </div>
   );
 }
