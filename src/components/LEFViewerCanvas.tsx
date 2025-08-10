@@ -88,9 +88,35 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
       ctx.textAlign='left';
       for(const pin of selectedMacro.pins){
         if(!pin.rects.length) continue;
-        let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
-        for(const pr of pin.rects){ if(pr.x1<minX)minX=pr.x1; if(pr.y1<minY)minY=pr.y1; if(pr.x2>maxX)maxX=pr.x2; if(pr.y2>maxY)maxY=pr.y2; }
-        const cx=(minX+maxX)/2; const cy=(minY+maxY)/2;
+        // ピン代表位置選択:
+        //  1. VIA層(V1..Vn)は除外
+        //  2. Metal層(M1..Mn)のうち 最も層番号が高い矩形を選択
+        //  3. それが複数あれば面積最大を優先 (実パッド≒広い)
+        //  4. 見つからなければ全矩形BBox重心
+        let chosen: typeof pin.rects[0] | null = null;
+        let chosenLayerNum = -1;
+        let chosenArea = -1;
+        const metalRegex = /^M(\d+)$/i;
+        for(const r of pin.rects){
+          const m = r.layer.match(metalRegex);
+          if(!m) continue; // VIAや他は無視
+          const num = parseInt(m[1],10);
+          const area = Math.max(0,(r.x2-r.x1)*(r.y2-r.y1));
+          if(num > chosenLayerNum){
+            chosen = r; chosenLayerNum = num; chosenArea = area;
+          } else if(num === chosenLayerNum && area > chosenArea){
+            chosen = r; chosenArea = area;
+          }
+        }
+        let cx:number; let cy:number;
+        if(!chosen){
+          // フォールバック: 旧方式 BBox 重心
+          let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+          for(const pr of pin.rects){ if(pr.x1<minX)minX=pr.x1; if(pr.y1<minY)minY=pr.y1; if(pr.x2>maxX)maxX=pr.x2; if(pr.y2>maxY)maxY=pr.y2; }
+          cx=(minX+maxX)/2; cy=(minY+maxY)/2;
+        }else{
+          cx=(chosen.x1+chosen.x2)/2; cy=(chosen.y1+chosen.y2)/2;
+        }
         const screenX = ( (cx - originX) * absScale ) + pan.x;
         const screenY = ( (macroH - (cy - originY)) * absScale ) + pan.y;
         const half=PIN_MARKER_SIZE/2;
