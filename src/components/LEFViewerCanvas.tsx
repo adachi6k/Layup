@@ -3,12 +3,12 @@ import { Container, Row, Col, Card, Form, Badge, ListGroup } from 'react-bootstr
 import type { LEFData, LEFMacro, LEFRect } from '../types/lef';
 import { LAYER_COLORS } from '../types/lef';
 
-interface LEFViewerCanvasProps { lefData: LEFData; filename: string; }
+interface LEFViewerCanvasProps { lefData: LEFData; filename: string; onFileLoad: (content: string, filename: string) => void; }
 
 const LOW_DETAIL_THRESHOLD = 0.15; // 絶対スケール閾値
 const PIXEL_SKIP_THRESHOLD = 0.6;   // 低詳細時にスキップするピクセルサイズ
 
-export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename }) => {
+export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, onFileLoad }) => {
   const [selectedMacro, setSelectedMacro] = useState<LEFMacro | null>(lefData.macros[0] || null);
   const [visibleLayers, setVisibleLayers] = useState<Set<string>>(new Set());
   const [fitMode, setFitMode] = useState<'both'|'width'|'height'|'cover'>('width');
@@ -21,6 +21,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename })
   const canvasRef = useRef<HTMLCanvasElement|null>(null);
   const [containerSize, setContainerSize] = useState({ width:100, height:100 });
   const [fps, setFps] = useState(0);
+  const [dragActive, setDragActive] = useState(false);
   const frameTimesRef = useRef<number[]>([]);
 
   // レイヤー一覧生成
@@ -77,6 +78,21 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename })
   const fitCover=()=>macroBBox&&fit('cover');
   const toggleLayer=(layer:string)=> setVisibleLayers(prev=>{ const ns=new Set(prev); ns.has(layer)?ns.delete(layer):ns.add(layer); return ns; });
 
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect='copy'; if(!dragActive) setDragActive(true); };
+  const handleDragEnter = (e: React.DragEvent) => { e.preventDefault(); if(!dragActive) setDragActive(true); };
+  const handleDragLeave = (e: React.DragEvent) => { if(e.currentTarget === e.target) setDragActive(false); };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragActive(false);
+    const files = e.dataTransfer.files;
+    if(!files || files.length===0) return;
+    const file = files[0];
+    if(!file.name.toLowerCase().endsWith('.lef') && file.type && !file.type.startsWith('text')) return;
+    const reader = new FileReader();
+    reader.onload = () => { const text = typeof reader.result === 'string' ? reader.result : ''; if(text) onFileLoad(text, file.name); };
+    reader.readAsText(file);
+  };
+
   const renderCanvasArea=()=>{ if(!selectedMacro||!macroBBox) return null; const {width:macroW,height:macroH,derived}=macroBBox; const low=absScale<LOW_DETAIL_THRESHOLD; return (
     <Card className="h-100 d-flex flex-column" style={{userSelect:isPanning?'none':'auto'}}>
       <Card.Header>
@@ -89,7 +105,8 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename })
       </Card.Header>
       <Card.Body className="p-1 flex-grow-1 d-flex" style={{minHeight:0}}>
         <div ref={containerRef} className="w-100 h-100 position-relative" style={{overflow:'hidden',cursor:isPanning?'grabbing':'default'}}
-             onWheel={handleWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseLeave={endPan} onMouseUp={endPan}>
+             onWheel={handleWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseLeave={endPan} onMouseUp={endPan}
+             onDragEnter={handleDragEnter} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
           <div style={{position:'absolute',top:6,left:6,zIndex:10,display:'flex',gap:4,background:'rgba(255,255,255,0.85)',padding:'4px 6px',borderRadius:4,boxShadow:'0 1px 3px rgba(0,0,0,0.25)',alignItems:'center'}}>
             <button className="btn btn-sm btn-outline-secondary" onClick={zoomIn}>+</button>
             <button className="btn btn-sm btn-outline-secondary" onClick={zoomOut}>-</button>
@@ -100,6 +117,11 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename })
             <button className="btn btn-sm btn-outline-secondary" onClick={fitCover}>Cover</button>
             <span className="badge bg-light text-dark" style={{fontSize:10}}>{fitMode}</span>
           </div>
+          {dragActive && (
+            <div style={{position:'absolute',inset:0,zIndex:20,background:'rgba(0,123,255,0.15)',border:'3px dashed #0d6efd',color:'#0d6efd',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:600,fontSize:18}}>
+              Drop LEF file to load
+            </div>
+          )}
           <canvas ref={canvasRef} style={{width:'100%',height:'100%',display:'block',background:'#fff',border:'1px solid #ddd',borderRadius:4,boxShadow:'0 2px 4px rgba(0,0,0,0.1)'}} />
         </div>
       </Card.Body>

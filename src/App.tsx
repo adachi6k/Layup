@@ -86,7 +86,7 @@ function App() {
         )}
 
         {lefData && !loading && (
-          <LEFViewer lefData={lefData} filename={filename} />
+          <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
         )}
       </div>
     </div>
