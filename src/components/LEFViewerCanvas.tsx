@@ -7,6 +7,7 @@ interface LEFViewerCanvasProps { lefData: LEFData; filename: string; onFileLoad:
 
 const LOW_DETAIL_THRESHOLD = 0.15; // 絶対スケール閾値
 const PIXEL_SKIP_THRESHOLD = 0.6;   // 低詳細時にスキップするピクセルサイズ
+const PIN_MARKER_SIZE = 6;          // ピンマーカー表示サイズ (px)
 
 export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, onFileLoad }) => {
   const [selectedMacro, setSelectedMacro] = useState<LEFMacro | null>(lefData.macros[0] || null);
@@ -44,8 +45,20 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
 
   const absScale = baseFitScale * zoom;
 
-  // 可視領域 (マクロ座標)
-  const visibleRegion = useMemo(()=>{ if(!macroBBox||absScale===0) return null; const inv=1/absScale; return { x0:-pan.x*inv+macroBBox.originX, y0:-pan.y*inv+macroBBox.originY, w:containerSize.width*inv, h:containerSize.height*inv }; },[macroBBox,absScale,pan.x,pan.y,containerSize]);
+  // 可視領域 (マクロ座標, Y反転考慮) : rect座標系 = 元LEF (上向き正)
+  const visibleRegion = useMemo(()=>{
+    if(!macroBBox||absScale===0) return null;
+    const inv = 1/absScale;
+    const { originX, originY, height: macroH } = macroBBox;
+    // Xは通常
+    const x0 = -pan.x * inv + originX;
+    const x1 = x0 + containerSize.width * inv;
+    // 変換: screenY = (macroH - (y - originY)) * absScale + pan.y
+    // y = originY + macroH - (screenY - pan.y)/absScale
+    const yTop = originY + macroH + pan.y * inv; // screenY=0
+    const yBottom = originY + macroH - (containerSize.height - pan.y) * inv; // screenY = H
+    return { x0, x1, y0: yBottom, y1: yTop, w: x1 - x0, h: yTop - yBottom };
+  },[macroBBox,absScale,pan.x,pan.y,containerSize.width,containerSize.height]);
 
   // 描画ルーチン
   const draw = useCallback(()=>{
@@ -53,11 +66,47 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
     const dpr=window.devicePixelRatio||1; const {width:cssW,height:cssH}=containerSize; if(canvas.width!==Math.round(cssW*dpr) || canvas.height!==Math.round(cssH*dpr)){ canvas.width=Math.round(cssW*dpr); canvas.height=Math.round(cssH*dpr); canvas.style.width=cssW+'px'; canvas.style.height=cssH+'px'; }
     ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH); ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,cssW,cssH);
     const {originX,originY,width:macroW,height:macroH}=macroBBox; ctx.translate(pan.x,pan.y); ctx.scale(absScale,absScale); ctx.translate(-originX,-originY); ctx.translate(0,macroH); ctx.scale(1,-1);
-    const low=absScale<LOW_DETAIL_THRESHOLD; const reg=visibleRegion; const marginFactor=0.08; let vx0=-Infinity,vy0=-Infinity,vx1=Infinity,vy1=Infinity; if(reg){ const mx=reg.w*marginFactor; const my=reg.h*marginFactor; vx0=reg.x0-mx; vy0=reg.y0-my; vx1=reg.x0+reg.w+mx; vy1=reg.y0+reg.h+my; }
-    const baseStroke=(Math.max(macroW,macroH)/1500); for(const r of allRects){ if(!visibleLayers.has(r.layer)) continue; if(!(r.x2>=vx0 && r.x1<=vx1 && r.y2>=vy0 && r.y1<=vy1)) continue; const w=r.x2-r.x1; const h=r.y2-r.y1; if(low && w*absScale<PIXEL_SKIP_THRESHOLD && h*absScale<PIXEL_SKIP_THRESHOLD) continue; const color=LAYER_COLORS[r.layer]||LAYER_COLORS.default; ctx.fillStyle=color; ctx.globalAlpha=low?0.55:0.8; ctx.fillRect(r.x1,r.y1,w,h); ctx.globalAlpha=1; ctx.lineWidth=baseStroke/absScale; ctx.strokeStyle='#000'; ctx.strokeRect(r.x1,r.y1,w,h); }
-    ctx.lineWidth=(Math.max(macroW,macroH)/1500)/absScale; ctx.setLineDash([ (Math.max(macroW,macroH)/600), (Math.max(macroW,macroH)/600) ]); ctx.strokeStyle='#000'; ctx.strokeRect(0,0,macroW,macroH); ctx.setLineDash([]); ctx.restore();
+    const low=absScale<LOW_DETAIL_THRESHOLD; const reg=visibleRegion; const marginFactor=0.08; let vx0=-Infinity,vy0=-Infinity,vx1=Infinity,vy1=Infinity; if(reg){ const mx=reg.w*marginFactor; const my=reg.h*marginFactor; vx0=reg.x0-mx; vx1=reg.x1+mx; vy0=reg.y0-my; vy1=reg.y1+my; }
+    const baseStroke=(Math.max(macroW,macroH)/1500);
+    for(const r of allRects){
+      if(!visibleLayers.has(r.layer)) continue;
+      // カリング: 交差判定 (端含む)
+      if(!(r.x2 >= vx0 && r.x1 <= vx1 && r.y2 >= vy0 && r.y1 <= vy1)) continue;
+      const w=r.x2-r.x1; const h=r.y2-r.y1;
+      if(low && w*absScale<PIXEL_SKIP_THRESHOLD && h*absScale<PIXEL_SKIP_THRESHOLD) continue;
+      const color=LAYER_COLORS[r.layer]||LAYER_COLORS.default;
+      ctx.fillStyle=color; ctx.globalAlpha=low?0.55:0.8; ctx.fillRect(r.x1,r.y1,w,h); ctx.globalAlpha=1; ctx.lineWidth=baseStroke/absScale; ctx.strokeStyle='#000'; ctx.strokeRect(r.x1,r.y1,w,h);
+    }
+    ctx.lineWidth=(Math.max(macroW,macroH)/1500)/absScale; ctx.setLineDash([ (Math.max(macroW,macroH)/600), (Math.max(macroW,macroH)/600) ]); ctx.strokeStyle='#000'; ctx.strokeRect(0,0,macroW,macroH); ctx.setLineDash([]);
+
+    // ピン描画: 変換解除しスクリーン座標で一定サイズ表示
+    ctx.restore();
+    ctx.save(); ctx.scale(dpr,dpr);
+    if(selectedMacro){
+      ctx.font='11px system-ui, sans-serif';
+      ctx.textBaseline='middle';
+      ctx.textAlign='left';
+      for(const pin of selectedMacro.pins){
+        if(!pin.rects.length) continue;
+        let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+        for(const pr of pin.rects){ if(pr.x1<minX)minX=pr.x1; if(pr.y1<minY)minY=pr.y1; if(pr.x2>maxX)maxX=pr.x2; if(pr.y2>maxY)maxY=pr.y2; }
+        const cx=(minX+maxX)/2; const cy=(minY+maxY)/2;
+        const screenX = ( (cx - originX) * absScale ) + pan.x;
+        const screenY = ( (macroH - (cy - originY)) * absScale ) + pan.y;
+        const half=PIN_MARKER_SIZE/2;
+        ctx.fillStyle='#000'; ctx.globalAlpha=0.85; ctx.fillRect(screenX-half,screenY-half,PIN_MARKER_SIZE,PIN_MARKER_SIZE);
+        ctx.globalAlpha=1; ctx.fillStyle='#fff'; ctx.fillRect(screenX-half+1,screenY-half+1,PIN_MARKER_SIZE-2,PIN_MARKER_SIZE-2);
+        ctx.fillStyle='#0d6efd'; ctx.fillRect(screenX-half+2,screenY-half+2,PIN_MARKER_SIZE-4,PIN_MARKER_SIZE-4);
+        const label=pin.name; const padX=4; const padY=2; const metrics=ctx.measureText(label); const labelW=metrics.width+padX*2; const labelH=12+padY; const labelX=screenX+PIN_MARKER_SIZE/2+4; const labelY=screenY;
+        ctx.fillStyle='rgba(255,255,255,0.92)'; ctx.strokeStyle='rgba(0,0,0,0.3)'; ctx.lineWidth=1;
+        // ラウンド矩形 (fallback: path)
+        ctx.beginPath(); const r=3; const x=labelX; const y=labelY-labelH/2; const w=labelW; const h=labelH; ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle='#000'; ctx.fillText(label,labelX+padX,labelY);
+      }
+    }
+    ctx.restore();
     const now=performance.now(); const ft=frameTimesRef.current; ft.push(now); while(ft.length && now-ft[0]>1000) ft.shift(); setFps(ft.length);
-  },[macroBBox,allRects,visibleLayers,absScale,pan.x,pan.y,containerSize,visibleRegion]);
+  },[macroBBox,allRects,visibleLayers,absScale,pan.x,pan.y,containerSize,visibleRegion,selectedMacro]);
 
   useEffect(()=>{ draw(); },[draw]);
 
