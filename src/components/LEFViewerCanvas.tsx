@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Container, Row, Col, Card, Form, Badge, ListGroup } from 'react-bootstrap';
 import type { LEFData, LEFMacro, LEFRect } from '../types/lef';
-import { LAYER_COLORS } from '../types/lef';
+import { LAYER_COLORS, getLayerColor } from '../types/lef';
 
 interface LEFViewerCanvasProps { lefData: LEFData; filename: string; onFileLoad: (content: string, filename: string) => void; }
 
@@ -74,7 +74,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
       if(!(r.x2 >= vx0 && r.x1 <= vx1 && r.y2 >= vy0 && r.y1 <= vy1)) continue;
       const w=r.x2-r.x1; const h=r.y2-r.y1;
       if(low && w*absScale<PIXEL_SKIP_THRESHOLD && h*absScale<PIXEL_SKIP_THRESHOLD) continue;
-      const color=LAYER_COLORS[r.layer]||LAYER_COLORS.default;
+  const color=getLayerColor(r.layer);
       ctx.fillStyle=color; ctx.globalAlpha=low?0.55:0.8; ctx.fillRect(r.x1,r.y1,w,h); ctx.globalAlpha=1; ctx.lineWidth=baseStroke/absScale; ctx.strokeStyle='#000'; ctx.strokeRect(r.x1,r.y1,w,h);
     }
     ctx.lineWidth=(Math.max(macroW,macroH)/1500)/absScale; ctx.setLineDash([ (Math.max(macroW,macroH)/600), (Math.max(macroW,macroH)/600) ]); ctx.strokeStyle='#000'; ctx.strokeRect(0,0,macroW,macroH); ctx.setLineDash([]);
