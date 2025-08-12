@@ -25,6 +25,37 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
   const [dragActive, setDragActive] = useState(false);
   const frameTimesRef = useRef<number[]>([]);
 
+  // レイヤーTYPE (ROUTING/CUT/...) ルックアップ
+  const layerTypeMap = useMemo(()=>{
+    const m = new Map<string,string>();
+    for(const l of lefData.layers){
+      m.set((l.name||'').toString().trim().toUpperCase(), l.type);
+    }
+    return m;
+  },[lefData.layers]);
+
+  // レイヤー順位 (高いほど上位層として優先)
+  const getLayerRank = useCallback((layerName:string): number =>{
+    const key = (layerName||'').toString().trim().toUpperCase();
+    const type = layerTypeMap.get(key);
+    // CUT(ビア)は除外したいので最低値
+    if(type === 'CUT') return -Infinity;
+    // 明示的なビア表記も除外
+    if(/^(?:V|VIA)(\d+)$/.test(key)) return -Infinity;
+    // Metal (METALn/METn/Mn)
+    const m = key.match(/^(?:METAL|MET|M)(\d+)$/);
+    if(m){ return 300 + parseInt(m[1],10); }
+    // Local interconnect LI1, LI2...
+    const li = key.match(/^LI(\d+)$/);
+    if(li){ return 200 + parseInt(li[1],10); }
+    // POLY/PO は低め
+    if(/^PO(LY)?$/.test(key)) return 150;
+    // TYPEがROUTINGなら汎用順位
+    if(type === 'ROUTING') return 120;
+    // その他
+    return 0;
+  },[layerTypeMap]);
+
   // レイヤー一覧生成
   const allLayers = useMemo(()=>{ const s=new Set<string>(); lefData.macros.forEach((m:LEFMacro)=>{ m.pins.forEach(p=>p.rects.forEach(r=>s.add(r.layer))); m.obs.forEach(r=>s.add(r.layer)); }); return Array.from(s).sort(); },[lefData]);
   useEffect(()=>{ setVisibleLayers(new Set(allLayers)); },[allLayers]);
@@ -89,23 +120,19 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
       for(const pin of selectedMacro.pins){
         if(!pin.rects.length) continue;
         // ピン代表位置選択:
-        //  1. VIA層(V1..Vn)は除外
-        //  2. Metal層(M1..Mn)のうち 最も層番号が高い矩形を選択
-        //  3. それが複数あれば面積最大を優先 (実パッド≒広い)
+        //  1. CUT(ビア)を除外
+        //  2. ROUTING層のうち順位が最も高いレイヤーの矩形を選択 (METn > LIn > POLY > その他ROUTING)
+        //  3. 同順位が複数あれば面積最大を優先
         //  4. 見つからなければ全矩形BBox重心
         let chosen: typeof pin.rects[0] | null = null;
-        let chosenLayerNum = -1;
+        let chosenRank = -Infinity;
         let chosenArea = -1;
-        const metalRegex = /^M(\d+)$/i;
         for(const r of pin.rects){
-          const m = r.layer.match(metalRegex);
-          if(!m) continue; // VIAや他は無視
-          const num = parseInt(m[1],10);
+          const rank = getLayerRank(r.layer);
+          if(rank === -Infinity) continue;
           const area = Math.max(0,(r.x2-r.x1)*(r.y2-r.y1));
-          if(num > chosenLayerNum){
-            chosen = r; chosenLayerNum = num; chosenArea = area;
-          } else if(num === chosenLayerNum && area > chosenArea){
-            chosen = r; chosenArea = area;
+          if(rank > chosenRank || (rank === chosenRank && area > chosenArea)){
+            chosen = r; chosenRank = rank; chosenArea = area;
           }
         }
         let cx:number; let cy:number;
