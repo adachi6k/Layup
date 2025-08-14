@@ -1,161 +1,177 @@
-# React + TypeScript + Vite
+# Layup – Web-based LEF File Viewer
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Layup is a lightweight, browser‑based viewer for LEF (Library Exchange Format) files.  
+It helps you quickly inspect MACRO geometry, pins, layers, and obstructions (OBS) for library / layout understanding and early verification—without installing heavy EDA tools.
 
-Currently, two official plugins are available:
+<img width="1255" height="956" alt="screenshot" src="https://github.com/user-attachments/assets/0995b07c-a8f4-450e-84bc-95f91e62ee6b" />
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+---
 
-# LEF File Viewer
+## Key Features
 
-A web-based LEF (Library Exchange Format) file viewer for EDA (Electronic Design Automation) applications. This tool allows you to visualize circuit layouts, pins, and layer information from LEF files in an interactive graphical interface.
+- Drag & drop, file picker, or sample URL loading
+- Layer visibility toggling (Metal / Via / PIN / OBS)
+- Zoom & pan (mouse & touch)
+- Macro switching with size / origin display
+- Pin list with direction, use, and geometry preview
+- Obstruction (OBS) visualization
+- File statistics (macro count, pin count, etc.)
+- Responsive layout (desktop / mobile)
 
-<img width="1255" height="956" alt="image" src="https://github.com/user-attachments/assets/0995b07c-a8f4-450e-84bc-95f91e62ee6b" />
+---
 
-## Features
+## Supported LEF Elements (Current Scope)
 
-- **Drag & Drop Interface**: Simply drag LEF files into the browser
-- **URL Loading**: Load LEF files from remote URLs (including sample files)
-- **Interactive Visualization**: 
-  - Layer-by-layer visualization with color coding
-  - Toggle layer visibility
-  - Zoom and pan support
-  - Pin and obstruction geometry display
-- **Detailed Information**: 
-  - File metadata and statistics
-  - Pin information with direction and usage
-  - Macro properties and dimensions
-- **Responsive Design**: Works on desktop and mobile devices
+| Category  | Supported Items |
+|-----------|------------------|
+| Version   | 5.6+ core constructs (progressively expanding) |
+| MACRO     | NAME, CLASS, SIZE, ORIGIN, SYMMETRY (when present) |
+| PIN       | DIRECTION, USE, PORT (LAYER / RECT) |
+| LAYER     | Common metal layers (M1–M8) and via layers (V1–V5) |
+| OBS       | LAYER / RECT |
+| Not yet   | ANTENNAMODEL, advanced SPACINGTABLE forms, complex SITE usage, POLYGON, etc. |
 
-## Supported Features
+Open an issue if you need unsupported constructs.
 
-- LEF version 5.6+ files
-- MACRO definitions with:
-  - SIZE and ORIGIN information
-  - PIN geometries and properties
-  - OBS (obstruction) geometries
-  - Multiple metal layers (M1-M8)
-  - Via layers (V1-V5)
-  - Power and ground pins (VDD/VSS)
+---
 
-## Getting Started
+## Usage Workflow
+
+1. Provide a `.lef` file (drag & drop, choose file, or load a sample).
+2. Use the left panel to:
+   - View file summary
+   - Toggle layer visibility
+   - Select macros
+3. Explore the central SVG view:
+   - Zoom with mouse wheel / pinch
+   - Pan by dragging
+4. Inspect pins in the right panel:
+   - Direction / use / layer rectangles
+5. Iterate across macros as needed.
+
+All parsing happens locally inside the browser (no server upload).
+
+---
+
+## Quick Start (Development)
 
 ### Prerequisites
 
-- Node.js 18+ (Note: Vite 7.x requires Node 20+, but will work with warnings on Node 18)
-- npm or yarn
+- Node.js 18+  
+  (Note: Vite 7 recommends Node 20+. Node 18 runs with warnings.)
+- npm / yarn / pnpm
 
-### Installation
+### Setup
 
-1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd layup
-```
-
-2. Install dependencies:
-```bash
+git clone https://github.com/adachi6k/Layup.git
+cd Layup
 npm install
-```
-
-3. Start the development server:
-```bash
 npm run dev
+# Open http://localhost:5173
 ```
 
-4. Open your browser and navigate to `http://localhost:5173`
-
-### Building for Production
+### Production Build
 
 ```bash
 npm run build
+npm run preview  # Optional local preview
 ```
 
-The built files will be in the `dist/` directory.
+Build artifacts are emitted to `dist/` and can be hosted on any static hosting (GitHub Pages, Vercel, Netlify, etc.).
 
-## Usage
+---
 
-1. **Load a LEF file**:
-   - Drag and drop a `.lef` file onto the interface
-   - Click "Choose File" to browse for a file
-   - Click "Load Sample File" to load a demo file
+## Architecture Overview
 
-2. **Navigate the interface**:
-   - **Left panel**: File information, layer controls, and macro list
-   - **Center panel**: Interactive visualization of the selected macro
-   - **Right panel**: Detailed pin information
+| Path | Purpose |
+|------|---------|
+| `src/types/lef.ts` | TypeScript interfaces for LEF entities |
+| `src/utils/lefParser.ts` | Text → normalized in‑memory model |
+| `src/components/FileDropZone.tsx` | File / URL ingestion UI |
+| `src/components/LEFViewer.tsx` | Main layered SVG visualization |
+| `src/components/...` | Layer toggles, pin list, macro controls |
 
-3. **Layer controls**:
-   - Toggle individual layers on/off using checkboxes
-   - Each layer is color-coded for easy identification
+### Data Flow
 
-4. **Macro selection**:
-   - Click on macros in the left panel to switch between them
-   - View detailed pin information in the right panel
+```
+Raw LEF text
+    ↓ (tokenization / parsing)
+Normalized LEF model (macros / pins / layers / rects)
+    ↓
+React state
+    ↓
+SVG rendering (grouped per layer -> geometry -> styled)
+```
 
-## Technology Stack
+### Rendering Strategy
 
-- **React 18** with TypeScript
-- **Vite** for fast development and building
-- **Bootstrap 5** with React Bootstrap for UI components
-- **SVG** for scalable vector graphics rendering
+- LEF coordinate units are mapped to scalable SVG units.
+- Each layer grouped into a `<g>` for easy show/hide.
+- Zoom / pan handled via dynamic `viewBox`.
+- Colors derived from hash mapping (future: configurable palette).
 
-## Architecture
+---
 
-- `src/types/lef.ts` - TypeScript interfaces for LEF data structures
-- `src/utils/lefParser.ts` - LEF file parsing logic
-- `src/components/FileDropZone.tsx` - File upload component
-- `src/components/LEFViewer.tsx` - Main visualization component
+## Limitations / Known Gaps
 
-## Sample Files
+- Very large LEF files (tens of thousands of rects) may impact performance.
+- DEF / GDS and other layout formats are not yet supported.
+- VIA compound definitions simplified to rectangles.
+- Error handling for malformed LEF is basic.
+- No POLYGON support (currently RECT only).
 
-The application includes support for loading sample LEF files from the OpenROAD project:
-- [ASAP7 SRAM LEF files](https://github.com/The-OpenROAD-Project/asap7_sram_0p0)
+---
+
+## Roadmap (Planned Enhancements)
+
+- [ ] 3D layer extrusion / stacked preview
+- [ ] DEF integration (combined LEF + DEF view)
+- [ ] Export (PNG / SVG / PDF)
+- [ ] Advanced filtering (pin name / layer / direction)
+- [ ] Performance optimizations (tiling / virtualization)
+- [ ] WebGL / Canvas backend for heavy geometry
+- [ ] Ruler & coordinate probe
+- [ ] Dark theme
+- [ ] Internationalization (i18n)
+- [ ] POLYGON & complex VIA support
+
+Contributions / suggestions welcome.
+
+---
+
+## Sample Sources
+
+You can load public LEF samples (subject to CORS):
+
+- ASAP7 SRAM LEF: https://github.com/The-OpenROAD-Project/asap7_sram_0p0
+
+Paste raw file URLs into the URL input field.
+
+---
 
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch: `git checkout -b feature-name`
-3. Commit your changes: `git commit -am 'Add some feature'`
-4. Push to the branch: `git push origin feature-name`
-5. Submit a pull request
+2. Create a feature branch: `git checkout -b feat/your-feature`
+3. Implement & test: `npm run dev`
+4. (Optional) Lint / types: `npm run lint && npm run typecheck` (add script if missing)
+5. Commit: `git commit -m "feat: add your feature"`
+6. Push & open a Pull Request
 
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- Inspired by the [OpenROAD](https://github.com/The-OpenROAD-Project/OpenROAD) project
-- Based on the [Meno](https://github.com/shioyadan/meno) visualization tool architecture
-- Uses LEF file format specifications from the EDA industry
-
-## Future Enhancements
-
-- [ ] 3D layer visualization
-- [ ] DEF file support
-- [ ] Export functionality (PNG, SVG, PDF)
-- [ ] Advanced search and filtering
-- [ ] Performance optimization for large files
-- [ ] WebGL rendering for complex layouts
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### Optional ESLint Setup
 
 ```js
-// eslint.config.js
+// eslint.config.js (example)
 import reactX from 'eslint-plugin-react-x'
 import reactDom from 'eslint-plugin-react-dom'
+import tseslint from 'typescript-eslint'
 
 export default tseslint.config([
-  globalIgnores(['dist']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
-      // Other configs...
-      // Enable lint rules for React
       reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
       reactDom.configs.recommended,
     ],
     languageOptions: {
@@ -163,8 +179,49 @@ export default tseslint.config([
         project: ['./tsconfig.node.json', './tsconfig.app.json'],
         tsconfigRootDir: import.meta.dirname,
       },
-      // other options...
     },
   },
 ])
 ```
+
+---
+
+## FAQ
+
+Q: Does the file ever leave my machine?  
+A: No. Parsing and rendering happen entirely in the browser.
+
+Q: What units are shown?  
+A: LEF units (micron scale) are scaled proportionally into SVG coordinates.
+
+Q: Are non-rectangular shapes supported?  
+A: Not yet—RECT only. File an issue if you require POLYGON.
+
+Q: How are colors chosen?  
+A: Deterministic hash of layer names (planned customizable palette).
+
+---
+
+## License
+
+MIT License – see [LICENSE](LICENSE) for details.
+
+---
+
+## Acknowledgments
+
+- [OpenROAD](https://github.com/The-OpenROAD-Project/OpenROAD)
+- Architectural inspiration from [Meno](https://github.com/shioyadan/meno)
+- LEF specification and broader EDA community efforts
+
+---
+
+## Short Summary (TL;DR)
+
+Layup is an in-browser LEF viewer: drop a file, toggle layers, inspect pins and geometry, and explore macros without backend dependencies. Roadmap includes DEF support, exports, performance tuning, and a WebGL backend.
+
+---
+
+Bug reports & feature requests: please include reproduction steps and (if possible) a minimal LEF snippet.
+
+Happy hacking!
