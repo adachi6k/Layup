@@ -11,7 +11,7 @@ Currently, two official plugins are available:
 
 A web-based LEF (Library Exchange Format) file viewer for EDA (Electronic Design Automation) applications. This tool allows you to visualize circuit layouts, pins, and layer information from LEF files in an interactive graphical interface.
 
-![LEF Viewer Screenshot](docs/screenshot.png)
+<img width="1255" height="956" alt="image" src="https://github.com/user-attachments/assets/0995b07c-a8f4-450e-84bc-95f91e62ee6b" />
 
 ## Features
 
