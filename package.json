@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+  "build": "tsc -b && vite build",
+  "deploy": "npm run build && touch dist/.nojekyll && git subtree push --prefix dist origin gh-pages",
     "lint": "eslint .",
     "preview": "vite preview"
   },
