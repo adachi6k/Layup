@@ -3,6 +3,8 @@
 Layup is a lightweight, browser‑based viewer for LEF (Library Exchange Format) files.  
 It helps you quickly inspect MACRO geometry, pins, layers, and obstructions (OBS) for library / layout understanding and early verification—without installing heavy EDA tools.
 
+https://adachi6k.github.io/Layup/
+
 <img width="1255" height="956" alt="screenshot" src="https://github.com/user-attachments/assets/0995b07c-a8f4-450e-84bc-95f91e62ee6b" />
 
 ---
