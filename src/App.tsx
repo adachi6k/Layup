@@ -3,6 +3,7 @@ import { Navbar, Container, Alert, Spinner } from 'react-bootstrap';
 import { FileDropZone } from './components/FileDropZone';
 // Canvas版ビューア (SVG版は components/LEFViewer.tsx に残置)
 import { LEFViewer } from './components/LEFViewerCanvas';
+import { DEFLayoutViewer } from './components/DEFLayoutViewer';
 import { LEFParser } from './utils/lefParser';
 import { parseDEF } from './utils/defParser';
 import type { DEFData } from './types/def';
@@ -111,8 +112,19 @@ function App() {
           <FileDropZone onFileLoad={handleFileLoad} onUrlLoad={handleUrlLoad} />
         )}
 
-        {lefData && !loading && (
+        {lefData && !loading && !defData && (
           <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
+        )}
+        {lefData && defData && !loading && (
+          <div className="d-flex" style={{height:'100%'}}>
+            <div style={{flex:'0 0 55%',display:'flex',flexDirection:'column',borderRight:'1px solid #ddd',padding:4}}>
+              <DEFLayoutViewer def={defData} lef={lefData} />
+              <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF die + components (pan/zoom)</div>
+            </div>
+            <div style={{flex:'1 1 auto',overflow:'hidden',paddingLeft:4}}>
+              <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
+            </div>
+          </div>
         )}
         {defData && !loading && (
           <div style={{padding:16}}>

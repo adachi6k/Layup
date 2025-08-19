@@ -11,6 +11,8 @@ const PIN_MARKER_SIZE = 6;          // ピンマーカー表示サイズ (px)
 
 export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, onFileLoad }) => {
   const [selectedMacro, setSelectedMacro] = useState<LEFMacro | null>(lefData.macros[0] || null);
+  const [selectedPin, setSelectedPin] = useState<string | null>(null);
+  const [hoveredPin, setHoveredPin] = useState<string | null>(null);
   const [visibleLayers, setVisibleLayers] = useState<Set<string>>(new Set());
   const [fitMode, setFitMode] = useState<'both'|'width'|'height'|'cover'>('width');
   const [zoom, setZoom] = useState(1); // baseFitScale * zoom = absScale
@@ -24,6 +26,10 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
   const [fps, setFps] = useState(0);
   const [dragActive, setDragActive] = useState(false);
   const frameTimesRef = useRef<number[]>([]);
+  const pinScreenPosRef = useRef<{name:string;x:number;y:number}[]>([]);
+  const culledRef = useRef<number>(0);
+  const [culled, setCulled] = useState(0);
+  const [cursorMacro, setCursorMacro] = useState<{x:number;y:number}|null>(null);
 
   // レイヤーTYPE (ROUTING/CUT/...) ルックアップ
   const layerTypeMap = useMemo(()=>{
@@ -59,6 +65,8 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
   // レイヤー一覧生成
   const allLayers = useMemo(()=>{ const s=new Set<string>(); lefData.macros.forEach((m:LEFMacro)=>{ m.pins.forEach(p=>p.rects.forEach(r=>s.add(r.layer))); m.obs.forEach(r=>s.add(r.layer)); }); return Array.from(s).sort(); },[lefData]);
   useEffect(()=>{ setVisibleLayers(new Set(allLayers)); },[allLayers]);
+  // LEF データが更新されたら選択マクロが存在するか確認しなければ先頭にリセット
+  useEffect(()=>{ if(!lefData.macros.length){ setSelectedMacro(null); return; } if(!selectedMacro || !lefData.macros.find(m=>m.name===selectedMacro.name)){ setSelectedMacro(lefData.macros[0]); } },[lefData.macros, selectedMacro]);
 
   // マクロ境界ボックス
   const macroBBox = useMemo(()=>{ if(!selectedMacro) return null; const {size,pins,obs}=selectedMacro; const explicit=size.width>0&&size.height>0; let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity; const rects:LEFRect[]=[]; obs.forEach(r=>rects.push(r)); pins.forEach(p=>p.rects.forEach(r=>rects.push(r))); for(const r of rects){ if(r.x1<minX)minX=r.x1; if(r.y1<minY)minY=r.y1; if(r.x2>maxX)maxX=r.x2; if(r.y2>maxY)maxY=r.y2; } if(!explicit){ if(minX===Infinity){minX=0;minY=0;maxX=1;maxY=1;} return {originX:minX,originY:minY,width:(maxX-minX)||1,height:(maxY-minY)||1,derived:true}; } return {originX:0,originY:0,width:size.width||1,height:size.height||1,derived:false}; },[selectedMacro]);
@@ -99,12 +107,13 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
     const {originX,originY,width:macroW,height:macroH}=macroBBox; ctx.translate(pan.x,pan.y); ctx.scale(absScale,absScale); ctx.translate(-originX,-originY); ctx.translate(0,macroH); ctx.scale(1,-1);
     const low=absScale<LOW_DETAIL_THRESHOLD; const reg=visibleRegion; const marginFactor=0.08; let vx0=-Infinity,vy0=-Infinity,vx1=Infinity,vy1=Infinity; if(reg){ const mx=reg.w*marginFactor; const my=reg.h*marginFactor; vx0=reg.x0-mx; vx1=reg.x1+mx; vy0=reg.y0-my; vy1=reg.y1+my; }
     const baseStroke=(Math.max(macroW,macroH)/1500);
+    let culledCount=0;
     for(const r of allRects){
       if(!visibleLayers.has(r.layer)) continue;
       // カリング: 交差判定 (端含む)
-      if(!(r.x2 >= vx0 && r.x1 <= vx1 && r.y2 >= vy0 && r.y1 <= vy1)) continue;
+      if(!(r.x2 >= vx0 && r.x1 <= vx1 && r.y2 >= vy0 && r.y1 <= vy1)){ culledCount++; continue; }
       const w=r.x2-r.x1; const h=r.y2-r.y1;
-      if(low && w*absScale<PIXEL_SKIP_THRESHOLD && h*absScale<PIXEL_SKIP_THRESHOLD) continue;
+      if(low && w*absScale<PIXEL_SKIP_THRESHOLD && h*absScale<PIXEL_SKIP_THRESHOLD){ culledCount++; continue; }
   const color=getLayerColor(r.layer);
       ctx.fillStyle=color; ctx.globalAlpha=low?0.55:0.8; ctx.fillRect(r.x1,r.y1,w,h); ctx.globalAlpha=1; ctx.lineWidth=baseStroke/absScale; ctx.strokeStyle='#000'; ctx.strokeRect(r.x1,r.y1,w,h);
     }
@@ -113,7 +122,8 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
     // ピン描画: 変換解除しスクリーン座標で一定サイズ表示
     ctx.restore();
     ctx.save(); ctx.scale(dpr,dpr);
-    if(selectedMacro){
+  pinScreenPosRef.current = [];
+  if(selectedMacro){
       ctx.font='11px system-ui, sans-serif';
       ctx.textBaseline='middle';
       ctx.textAlign='left';
@@ -144,12 +154,16 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
         }else{
           cx=(chosen.x1+chosen.x2)/2; cy=(chosen.y1+chosen.y2)/2;
         }
-        const screenX = ( (cx - originX) * absScale ) + pan.x;
-        const screenY = ( (macroH - (cy - originY)) * absScale ) + pan.y;
-        const half=PIN_MARKER_SIZE/2;
-        ctx.fillStyle='#000'; ctx.globalAlpha=0.85; ctx.fillRect(screenX-half,screenY-half,PIN_MARKER_SIZE,PIN_MARKER_SIZE);
-        ctx.globalAlpha=1; ctx.fillStyle='#fff'; ctx.fillRect(screenX-half+1,screenY-half+1,PIN_MARKER_SIZE-2,PIN_MARKER_SIZE-2);
-        ctx.fillStyle='#0d6efd'; ctx.fillRect(screenX-half+2,screenY-half+2,PIN_MARKER_SIZE-4,PIN_MARKER_SIZE-4);
+    const screenX = ( (cx - originX) * absScale ) + pan.x;
+    const screenY = ( (macroH - (cy - originY)) * absScale ) + pan.y;
+    pinScreenPosRef.current.push({name:pin.name,x:screenX,y:screenY});
+    const isSelected = selectedPin===pin.name;
+    const isHover = hoveredPin===pin.name;
+    const size = PIN_MARKER_SIZE * (isSelected?1.5:(isHover?1.2:1));
+    const half=size/2;
+    ctx.fillStyle=isSelected?'#dc3545':'#000'; ctx.globalAlpha=0.85; ctx.fillRect(screenX-half,screenY-half,size,size);
+    ctx.globalAlpha=1; ctx.fillStyle='#fff'; ctx.fillRect(screenX-half+1,screenY-half+1,size-2,size-2);
+    ctx.fillStyle=isSelected?'#dc3545':(isHover?'#6610f2':'#0d6efd'); ctx.fillRect(screenX-half+2,screenY-half+2,size-4,size-4);
         const label=pin.name; const padX=4; const padY=2; const metrics=ctx.measureText(label); const labelW=metrics.width+padX*2; const labelH=12+padY; const labelX=screenX+PIN_MARKER_SIZE/2+4; const labelY=screenY;
         ctx.fillStyle='rgba(255,255,255,0.92)'; ctx.strokeStyle='rgba(0,0,0,0.3)'; ctx.lineWidth=1;
         // ラウンド矩形 (fallback: path)
@@ -159,6 +173,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
     }
     ctx.restore();
     const now=performance.now(); const ft=frameTimesRef.current; ft.push(now); while(ft.length && now-ft[0]>1000) ft.shift(); setFps(ft.length);
+  culledRef.current = culledCount; setCulled(culledCount);
   },[macroBBox,allRects,visibleLayers,absScale,pan.x,pan.y,containerSize,visibleRegion,selectedMacro]);
 
   useEffect(()=>{ draw(); },[draw]);
@@ -167,8 +182,19 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
   const handleWheel=(e:React.WheelEvent)=>{ if(!macroBBox) return; e.preventDefault(); const factor=e.deltaY<0?1.1:0.9; setZoom(prev=>{ const nz=Math.min(50,Math.max(0.02,prev*factor)); const rect=containerRef.current?.getBoundingClientRect(); const cx=(e.clientX-(rect?.left||0)-pan.x)/(baseFitScale*prev); const cy=(e.clientY-(rect?.top||0)-pan.y)/(baseFitScale*prev); setPan({ x:e.clientX-(rect?.left||0)-cx*baseFitScale*nz, y:e.clientY-(rect?.top||0)-cy*baseFitScale*nz }); return nz; }); };
   // パン操作
   const onMouseDown=(e:React.MouseEvent)=>{ if(e.button!==0)return; panStart.current={x:e.clientX,y:e.clientY,origX:pan.x,origY:pan.y}; setIsPanning(true); };
-  const onMouseMove=(e:React.MouseEvent)=>{ if(!isPanning||!panStart.current)return; const dx=e.clientX-panStart.current.x; const dy=e.clientY-panStart.current.y; setPan({ x:panStart.current.origX+dx, y:panStart.current.origY+dy }); };
+  const onMouseMove=(e:React.MouseEvent)=>{
+    // パン処理
+    if(isPanning&&panStart.current){ const dx=e.clientX-panStart.current.x; const dy=e.clientY-panStart.current.y; setPan({ x:panStart.current.origX+dx, y:panStart.current.origY+dy }); }
+    if(!macroBBox) return;
+    const rect=containerRef.current?.getBoundingClientRect(); if(!rect) return;
+    const sx=e.clientX-rect.left; const sy=e.clientY-rect.top;
+    const {originX,originY,height:macroH}=macroBBox; const mx=originX + (sx - pan.x)/absScale; const my=originY + macroH - (sy - pan.y)/absScale; setCursorMacro({x:mx,y:my});
+    // ピンホバー検出
+    const threshold=PIN_MARKER_SIZE*0.75; let found:string|null=null; for(const p of pinScreenPosRef.current){ const dxp=sx-p.x; const dyp=sy-p.y; if(Math.abs(dxp)<=threshold && Math.abs(dyp)<=threshold){ found=p.name; break; } }
+    setHoveredPin(found);
+  };
   const endPan=()=>{ setIsPanning(false); panStart.current=null; };
+  const onMouseLeaveCanvas=()=>{ endPan(); setHoveredPin(null); setCursorMacro(null); };
 
   // コントロール群
   const zoomIn=()=>setZoom(z=>Math.min(50,z*1.2));
@@ -207,7 +233,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
       </Card.Header>
       <Card.Body className="p-1 flex-grow-1 d-flex" style={{minHeight:0}}>
         <div ref={containerRef} className="w-100 h-100 position-relative" style={{overflow:'hidden',cursor:isPanning?'grabbing':'default'}}
-             onWheel={handleWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseLeave={endPan} onMouseUp={endPan}
+             onWheel={handleWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseLeave={onMouseLeaveCanvas} onMouseUp={endPan}
              onDragEnter={handleDragEnter} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
           <div style={{position:'absolute',top:6,left:6,zIndex:10,display:'flex',gap:4,background:'rgba(255,255,255,0.85)',padding:'4px 6px',borderRadius:4,boxShadow:'0 1px 3px rgba(0,0,0,0.25)',alignItems:'center'}}>
             <button className="btn btn-sm btn-outline-secondary" onClick={zoomIn}>+</button>
@@ -218,13 +244,27 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
             <button className="btn btn-sm btn-outline-secondary" onClick={fitBoth}>Fit Both</button>
             <button className="btn btn-sm btn-outline-secondary" onClick={fitCover}>Cover</button>
             <span className="badge bg-light text-dark" style={{fontSize:10}}>{fitMode}</span>
+            <span className="badge bg-light text-dark" style={{fontSize:10}}>culled {culled}</span>
           </div>
+          {cursorMacro && (
+            <div style={{position:'absolute',bottom:6,left:6,zIndex:15,background:'rgba(0,0,0,0.55)',color:'#fff',padding:'2px 6px',fontSize:11,borderRadius:4}}>
+              ({cursorMacro.x.toFixed(2)}, {cursorMacro.y.toFixed(2)}) {hoveredPin && <span style={{marginLeft:6,color:'#ffc107'}}>PIN: {hoveredPin}</span>}
+            </div>
+          )}
           {dragActive && (
             <div style={{position:'absolute',inset:0,zIndex:20,background:'rgba(0,123,255,0.15)',border:'3px dashed #0d6efd',color:'#0d6efd',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:600,fontSize:18}}>
               Drop LEF file to load
             </div>
           )}
           <canvas ref={canvasRef} style={{width:'100%',height:'100%',display:'block',background:'#fff',border:'1px solid #ddd',borderRadius:4,boxShadow:'0 2px 4px rgba(0,0,0,0.1)'}} />
+          {(!selectedMacro || !macroBBox) && (
+            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#666',pointerEvents:'none'}}>
+              {lefData.macros.length? 'Select a macro from the list' : 'No MACRO definitions in this LEF'}
+            </div>
+          )}
+          {selectedMacro && macroBBox && visibleLayers.size===0 && (
+            <div style={{position:'absolute',top:0,left:0,right:0,padding:8,textAlign:'center',background:'rgba(255,255,0,0.25)',fontSize:12,fontWeight:600}}>All layers hidden</div>
+          )}
         </div>
       </Card.Body>
     </Card>
@@ -277,7 +317,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
               <Card.Body className="py-2" style={{overflow:'auto'}}>
                 <ListGroup variant="flush">
                   {selectedMacro.pins.map((pin,i)=>(
-                    <ListGroup.Item key={i} className="py-1 px-2" style={{fontSize:'0.8rem'}}>
+                    <ListGroup.Item key={i} className="py-1 px-2" style={{fontSize:'0.8rem',cursor:'pointer',background:selectedPin===pin.name?'#ffecec':undefined}} onClick={()=>setSelectedPin(p=>p===pin.name?null:pin.name)}>
                       <div className="fw-bold">{pin.name}</div>
                       <div>
                         <Badge bg="primary" className="me-1" style={{fontSize:'0.7rem'}}>{pin.direction}</Badge>
