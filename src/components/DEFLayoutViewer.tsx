@@ -13,6 +13,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
+  const [cursorUm, setCursorUm] = useState<{x:number;y:number}|null>(null);
   const panStart = useRef<{x:number;y:number;origX:number;origY:number}|null>(null);
   const { dieArea, units } = def;
   const dbuToUm = (v:number) => v / units;
@@ -79,10 +80,29 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     ctx.restore(); },[containerSize.width,containerSize.height,pan.x,pan.y,absScale,dieArea.x1,dieArea.y1,dieWUm,dieHUm,lef,def.components,dbuToUm]);
   useEffect(()=>{ draw(); },[draw]);
 
-  const handleWheel=(e:React.WheelEvent)=>{ e.preventDefault(); const factor=e.deltaY<0?1.1:0.9; setZoom(prev=>{ const nz=Math.min(80,Math.max(0.05,prev*factor)); if(nz===prev) return prev; const rect=containerRef.current?.getBoundingClientRect(); if(rect){ const cx=(e.clientX-rect.left-pan.x)/(baseScale*prev); const cy=(e.clientY-rect.top-pan.y)/(baseScale*prev); setPan({ x:e.clientX-rect.left-cx*baseScale*nz, y:e.clientY-rect.top-cy*baseScale*nz }); } return nz; }); };
-  const onMouseDown=(e:React.MouseEvent)=>{ if(e.button!==0) return; panStart.current={x:e.clientX,y:e.clientY,origX:pan.x,origY:pan.y}; setIsPanning(true); };
-  const onMouseMove=(e:React.MouseEvent)=>{ if(!isPanning||!panStart.current) return; const dx=e.clientX-panStart.current.x; const dy=e.clientY-panStart.current.y; setPan({ x:panStart.current.origX+dx, y:panStart.current.origY+dy }); };
+  const handleWheel=(e:React.WheelEvent)=>{ e.preventDefault();
+    // Ctrlキー押下時はズーム倍率を少し大きくする
+    const up = e.deltaY < 0;
+    const factorBase = e.ctrlKey ? 1.2 : 1.1;
+    const factor = up ? factorBase : 1 / factorBase;
+    setZoom(prev=>{ const nz=Math.min(120,Math.max(0.02,prev*factor)); if(nz===prev) return prev; const rect=containerRef.current?.getBoundingClientRect(); if(rect){ const cx=(e.clientX-rect.left-pan.x)/(baseScale*prev); const cy=(e.clientY-rect.top-pan.y)/(baseScale*prev); setPan({ x:e.clientX-rect.left-cx*baseScale*nz, y:e.clientY-rect.top-cy*baseScale*nz }); } return nz; }); };
+  const onMouseDown=(e:React.MouseEvent)=>{ // 左 or 中クリックでパン開始
+    if(e.button!==0 && e.button!==1) return;
+    panStart.current={x:e.clientX,y:e.clientY,origX:pan.x,origY:pan.y}; setIsPanning(true);
+  };
+  const onMouseMove=(e:React.MouseEvent)=>{
+    // カーソル座標（µm）更新
+    const rect=containerRef.current?.getBoundingClientRect();
+    if(rect){
+      const xUm=(e.clientX-rect.left-pan.x)/absScale;
+      const yUm=(e.clientY-rect.top-pan.y)/absScale;
+      setCursorUm({x:xUm,y:yUm});
+    }
+    if(isPanning && panStart.current){ const dx=e.clientX-panStart.current.x; const dy=e.clientY-panStart.current.y; setPan({ x:panStart.current.origX+dx, y:panStart.current.origY+dy }); }
+  };
   const endPan=()=>{ setIsPanning(false); panStart.current=null; };
+  const onMouseLeave=()=>{ endPan(); setCursorUm(null); };
+  const onDoubleClick=()=>{ computeFit(); };
   const zoomIn=()=>setZoom(z=>Math.min(80,z*1.2));
   const zoomOut=()=>setZoom(z=>Math.max(0.05,z/1.2));
   const resetView=()=>computeFit();
@@ -110,11 +130,17 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
       <span className="badge bg-light text-dark">Zoom {zoom.toFixed(2)}</span>
     </div>
     <div ref={containerRef} style={{position:'relative',flex:1,overflow:'hidden',border:'1px solid #ddd',borderRadius:4,cursor:isPanning?'grabbing':'default'}}
-         onWheel={handleWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseLeave={endPan} onMouseUp={endPan}>
+         onWheel={handleWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseLeave={onMouseLeave} onMouseUp={endPan} onDoubleClick={onDoubleClick}>
       <canvas ref={canvasRef} style={{position:'absolute',inset:0}} />
       {def.components.filter(c=>c.placed).length===0 && (
         <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#666',pointerEvents:'none',background:'rgba(255,255,255,0.6)'}}>
           No placed components parsed (check COMPONENTS / + PLACED lines)
+        </div>
+      )}
+      {cursorUm && (
+        <div style={{position:'absolute',left:6,bottom:6,zIndex:15,background:'rgba(0,0,0,0.55)',color:'#fff',padding:'2px 6px',fontSize:11,borderRadius:4,display:'flex',gap:6}}>
+          <span>{cursorUm.x.toFixed(2)}, {cursorUm.y.toFixed(2)} µm</span>
+          <span style={{opacity:0.75}}>scale {absScale.toFixed(2)} px/µm</span>
         </div>
       )}
       {showDebug && debugRows.length>0 && (
