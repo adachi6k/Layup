@@ -4,6 +4,8 @@ import { FileDropZone } from './components/FileDropZone';
 // Canvas版ビューア (SVG版は components/LEFViewer.tsx に残置)
 import { LEFViewer } from './components/LEFViewerCanvas';
 import { LEFParser } from './utils/lefParser';
+import { parseDEF } from './utils/defParser';
+import type { DEFData } from './types/def';
 import type { LEFData } from './types/lef';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap-icons/font/bootstrap-icons.css';
@@ -11,20 +13,44 @@ import 'bootstrap-icons/font/bootstrap-icons.css';
 function App() {
   const [lefData, setLefData] = useState<LEFData | null>(null);
   const [filename, setFilename] = useState<string>('');
+  const [defData, setDefData] = useState<DEFData | null>(null);
+  const [defFilename, setDefFilename] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleFileLoad = useCallback((content: string, fileName: string) => {
     setLoading(true);
     setError(null);
-    
     try {
-      const parser = new LEFParser();
-      const parsed = parser.parse(content);
-      setLefData(parsed);
-      setFilename(fileName);
+      const lower = fileName.toLowerCase();
+      if(lower.endsWith('.lef')){
+        const parser = new LEFParser();
+        const parsed = parser.parse(content);
+        setLefData(parsed);
+        setFilename(fileName);
+      } else if(lower.endsWith('.def')) {
+        const parsed = parseDEF(content);
+        setDefData(parsed);
+        setDefFilename(fileName);
+      } else {
+        // 拡張子で判別できない場合LEF試行→失敗ならDEF
+        try {
+          const parser = new LEFParser();
+          const parsed = parser.parse(content);
+          setLefData(parsed);
+          setFilename(fileName || 'unknown.lef');
+        } catch {
+          try {
+            const parsedD = parseDEF(content);
+            setDefData(parsedD);
+            setDefFilename(fileName || 'unknown.def');
+          } catch(err2){
+            throw err2;
+          }
+        }
+      }
     } catch (err) {
-      setError(`Failed to parse LEF file: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      setError(`Failed to parse file: ${err instanceof Error ? err.message : 'Unknown error'}`);
     } finally {
       setLoading(false);
     }
@@ -81,12 +107,23 @@ function App() {
           </Container>
         )}
 
-        {!lefData && !loading && !error && (
+        {!lefData && !defData && !loading && !error && (
           <FileDropZone onFileLoad={handleFileLoad} onUrlLoad={handleUrlLoad} />
         )}
 
         {lefData && !loading && (
           <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
+        )}
+        {defData && !loading && (
+          <div style={{padding:16}}>
+            <h5>DEF Loaded: {defFilename}</h5>
+            <p style={{fontSize:'0.85rem'}}>
+              Version: {defData.version || '(unknown)'} / UNITS (DBU/μm): {defData.units}<br/>
+              DIEAREA: ({defData.dieArea.x1},{defData.dieArea.y1}) - ({defData.dieArea.x2},{defData.dieArea.y2})<br/>
+              Components: {defData.components.length}
+            </p>
+            <p style={{fontSize:'0.75rem',color:'#666'}}>※ 現段階: 配置描画は未実装 (次ステップでCanvas統合)</p>
+          </div>
         )}
       </div>
     </div>
