@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { Navbar, Container, Alert, Spinner } from 'react-bootstrap';
 import { FileDropZone } from './components/FileDropZone';
 // Canvas版ビューア (SVG版は components/LEFViewer.tsx に残置)
@@ -18,6 +18,13 @@ function App() {
   const [defFilename, setDefFilename] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'split'|'lef'|'def'>(()=>{
+    const saved = typeof localStorage!=='undefined'? localStorage.getItem('layoutViewMode'):null;
+    return (saved==='lef'||saved==='def'||saved==='split')? saved : 'split';
+  });
+
+  // persist view mode
+  useEffect(()=>{ try{ localStorage.setItem('layoutViewMode', viewMode);}catch{/* ignore */}},[viewMode]);
 
   const handleFileLoad = useCallback((content: string, fileName: string) => {
     setLoading(true);
@@ -83,7 +90,21 @@ function App() {
             <i className="bi bi-diagram-3 me-2"></i>
             LEF File Viewer
           </Navbar.Brand>
-          <small className="text-light">EDA Layout Visualization Tool</small>
+          <div className="d-flex align-items-center gap-3 ms-auto">
+            {(lefData || defData) && (
+              <div className="text-light small d-none d-md-block">
+                {lefData && <span className="me-2"><i className="bi bi-file-earmark-code me-1"></i>{filename||'LEF ?'}</span>}
+                {defData && <span><i className="bi bi-diagram-3 me-1"></i>{defFilename||'DEF ?'}</span>}
+              </div>
+            )}
+            {lefData && defData && (
+              <div className="btn-group btn-group-sm" role="group" aria-label="View mode">
+                <button className={`btn btn-outline-light ${viewMode==='lef'?'active':''}`} onClick={()=>setViewMode('lef')} title="LEF 単独 (1)">LEF</button>
+                <button className={`btn btn-outline-light ${viewMode==='def'?'active':''}`} onClick={()=>setViewMode('def')} title="DEF 単独 (2)">DEF</button>
+                <button className={`btn btn-outline-light ${viewMode==='split'?'active':''}`} onClick={()=>setViewMode('split')} title="並列表示 (3)">Split</button>
+              </div>
+            )}
+          </div>
         </Container>
       </Navbar>
 
@@ -112,29 +133,42 @@ function App() {
           <FileDropZone onFileLoad={handleFileLoad} onUrlLoad={handleUrlLoad} />
         )}
 
+        {/* 単独 LEF */}
         {lefData && !loading && !defData && (
           <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
         )}
-        {lefData && defData && !loading && (
+        {/* 単独 DEF (LEF 未ロード) */}
+        {defData && !lefData && !loading && (
+          <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
+            <div style={{flex:1,minHeight:0}}>
+              <DEFLayoutViewer def={defData} lef={null} />
+            </div>
+            <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF layout (LEF未ロードのためサイズ未解決あり)</div>
+          </div>
+        )}
+        {/* 両方ロード時: モード分岐 */}
+        {lefData && defData && !loading && viewMode==='split' && (
           <div className="d-flex" style={{height:'100%'}}>
-            <div style={{flex:'0 0 55%',display:'flex',flexDirection:'column',borderRight:'1px solid #ddd',padding:4}}>
-              <DEFLayoutViewer def={defData} lef={lefData} />
+            <div style={{flex:'0 0 55%',display:'flex',flexDirection:'column',borderRight:'1px solid #ddd',padding:4,minWidth:0}}>
+              <div style={{flex:1,minHeight:0}}>
+                <DEFLayoutViewer def={defData} lef={lefData} />
+              </div>
               <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF die + components (pan/zoom)</div>
             </div>
-            <div style={{flex:'1 1 auto',overflow:'hidden',paddingLeft:4}}>
+            <div style={{flex:'1 1 auto',overflow:'hidden',paddingLeft:4,minWidth:0}}>
               <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
             </div>
           </div>
         )}
-        {defData && !loading && (
-          <div style={{padding:16}}>
-            <h5>DEF Loaded: {defFilename}</h5>
-            <p style={{fontSize:'0.85rem'}}>
-              Version: {defData.version || '(unknown)'} / UNITS (DBU/μm): {defData.units}<br/>
-              DIEAREA: ({defData.dieArea.x1},{defData.dieArea.y1}) - ({defData.dieArea.x2},{defData.dieArea.y2})<br/>
-              Components: {defData.components.length}
-            </p>
-            <p style={{fontSize:'0.75rem',color:'#666'}}>※ 現段階: 配置描画は未実装 (次ステップでCanvas統合)</p>
+        {lefData && defData && !loading && viewMode==='lef' && (
+          <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
+        )}
+        {lefData && defData && !loading && viewMode==='def' && (
+          <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
+            <div style={{flex:1,minHeight:0}}>
+              <DEFLayoutViewer def={defData} lef={lefData} />
+            </div>
+            <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF die + components (pan/zoom)</div>
           </div>
         )}
       </div>
