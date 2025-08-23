@@ -21,7 +21,6 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   // LOD 閾値 (absScale 基準)
   const LOD_HIGH = 1;      // 向きマーカー表示 & 詳細
   const LOD_GRID_MIN = 0.15; // グリッド表示下限
-  const LOD_SAMPLE_LOW = 0.08; // これ未満なら矩形サンプリング
   const panStart = useRef<{x:number;y:number;origX:number;origY:number}|null>(null);
   const { dieArea, units } = def;
   // NOTE: dbuToUm を useCallback 化して参照の変化で computeFit が毎レンダー呼ばれズームが初期化される問題を防ぐ
@@ -83,13 +82,14 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   const draw = useCallback(()=>{ const canvas=canvasRef.current; if(!canvas) return; const ctx=canvas.getContext('2d'); if(!ctx) return; const dpr=window.devicePixelRatio||1; const cssW=containerSize.width; const cssH=containerSize.height; if(canvas.width!==Math.round(cssW*dpr)||canvas.height!==Math.round(cssH*dpr)){ canvas.width=Math.round(cssW*dpr); canvas.height=Math.round(cssH*dpr); canvas.style.width=cssW+'px'; canvas.style.height=cssH+'px'; } const start=performance.now(); ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cssW,cssH); ctx.translate(pan.x,pan.y); ctx.scale(absScale,absScale); // ダイ枠
     ctx.save(); ctx.lineWidth=2/absScale; ctx.strokeStyle='#222'; ctx.setLineDash([8/absScale,6/absScale]); ctx.strokeRect(dbuToUm(dieArea.x1),dbuToUm(dieArea.y1),dieWUm,dieHUm); ctx.setLineDash([]); ctx.restore();
     // グリッド (LOD)
-    if(absScale>=LOD_GRID_MIN){ const gridPath = getGridPath(); if(gridPath){ ctx.save(); ctx.lineWidth=1/absScale; ctx.strokeStyle='rgba(0,0,0,0.08)'; ctx.stroke(gridPath); ctx.restore(); } }
+    const fastPan = isPanning; // パン中は軽量表示
+    if(!fastPan && absScale>=LOD_GRID_MIN){ const gridPath = getGridPath(); if(gridPath){ ctx.save(); ctx.lineWidth=1/absScale; ctx.strokeStyle='rgba(0,0,0,0.08)'; ctx.stroke(gridPath); ctx.restore(); } }
     // コンポーネント
     const leftWorld = (-pan.x)/absScale, topWorld=(-pan.y)/absScale, rightWorld=(cssW-pan.x)/absScale, bottomWorld=(cssH-pan.y)/absScale;
     let visible=0, culled=0;
-    const highDetail = absScale >= LOD_HIGH;
-    const sampleLow = absScale < LOD_SAMPLE_LOW; // サンプリング描画
-    const sampleStep = sampleLow ? Math.ceil(1/Math.max(0.05,absScale)) : 1; // 粗い時ほど間引き
+  const highDetail = !fastPan && absScale >= LOD_HIGH;
+  // 品質優先評価モード: サンプリング無効化
+  const sampleStep = 1; // ← テスト用: 常に全件描画 (性能影響を計測するため)
     // 色別 Path 集約 (低〜中 LOD のみ)
     const pathMap:Record<string,Path2D> = {};
     const markerPaths:Record<string,Path2D> = {};
@@ -124,7 +124,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     ctx.restore();
     const end=performance.now();
     setPerf({ total: precomputedRef.current.length, visible, culled, drawMs: end-start });
-  },[containerSize.width,containerSize.height,pan.x,pan.y,absScale,dieArea.x1,dieArea.y1,dieWUm,dieHUm,dbuToUm]);
+  },[containerSize.width,containerSize.height,pan.x,pan.y,absScale,isPanning,dieArea.x1,dieArea.y1,dieWUm,dieHUm,dbuToUm]);
 
   // マクロ解決をメモ化 (描画毎に Map を構築しない)
   const resolveMacroRef = useRef<((name:string)=>{w:number;h:number;raw:string}|undefined)>(undefined);
