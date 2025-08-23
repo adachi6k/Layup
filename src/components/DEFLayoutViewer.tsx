@@ -11,6 +11,9 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   const [baseScale, setBaseScale] = useState(1);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  // パン入力の rAF スロットリング用
+  const panPendingRef = useRef<{x:number;y:number}|null>(null);
+  const panCommitRafRef = useRef<number|null>(null);
   const [isPanning, setIsPanning] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [cursorUm, setCursorUm] = useState<{x:number;y:number}|null>(null);
@@ -170,7 +173,18 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
       const yUm=(e.clientY-rect.top-pan.y)/absScale;
       setCursorUm({x:xUm,y:yUm});
     }
-    if(isPanning && panStart.current){ const dx=e.clientX-panStart.current.x; const dy=e.clientY-panStart.current.y; setPan({ x:panStart.current.origX+dx, y:panStart.current.origY+dy }); }
+    if(isPanning && panStart.current){
+      const dx=e.clientX-panStart.current.x; const dy=e.clientY-panStart.current.y;
+      const next = { x:panStart.current.origX+dx, y:panStart.current.origY+dy };
+      panPendingRef.current = next;
+      if(panCommitRafRef.current==null){
+        panCommitRafRef.current = requestAnimationFrame(()=>{
+          if(panPendingRef.current) setPan(panPendingRef.current);
+          panPendingRef.current=null;
+          panCommitRafRef.current=null;
+        });
+      }
+    }
   };
   const endPan=()=>{ setIsPanning(false); panStart.current=null; };
   const onMouseLeave=()=>{ endPan(); setCursorUm(null); };
