@@ -14,6 +14,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   const [isPanning, setIsPanning] = useState(false);
   const [showDebug, setShowDebug] = useState(false);
   const [cursorUm, setCursorUm] = useState<{x:number;y:number}|null>(null);
+  const [perf, setPerf] = useState<{total:number;visible:number;culled:number;drawMs:number}|null>(null);
   const panStart = useRef<{x:number;y:number;origX:number;origY:number}|null>(null);
   const { dieArea, units } = def;
   // NOTE: dbuToUm を useCallback 化して参照の変化で computeFit が毎レンダー呼ばれズームが初期化される問題を防ぐ
@@ -72,35 +73,42 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     ctx.save(); ctx.lineWidth=2/absScale; ctx.strokeStyle='#222'; ctx.setLineDash([8/absScale,6/absScale]); ctx.strokeRect(dbuToUm(dieArea.x1),dbuToUm(dieArea.y1),dieWUm,dieHUm); ctx.setLineDash([]); ctx.restore();
     // グリッド
     const targetCellPx=80; const cellUm=targetCellPx/absScale; if(cellUm>0){ const stepRaw=cellUm; const mag=Math.pow(10,Math.floor(Math.log10(stepRaw))); const norm=stepRaw/mag; let gridStep=mag; if(norm>5) gridStep=10*mag; else if(norm>2) gridStep=5*mag; else if(norm>1) gridStep=2*mag; const startX=Math.floor(dbuToUm(dieArea.x1)/gridStep)*gridStep; const endX=dbuToUm(dieArea.x1)+dieWUm; const startY=Math.floor(dbuToUm(dieArea.y1)/gridStep)*gridStep; const endY=dbuToUm(dieArea.y1)+dieHUm; ctx.save(); ctx.lineWidth=1/absScale; ctx.strokeStyle='rgba(0,0,0,0.08)'; ctx.beginPath(); for(let x=startX;x<=endX;x+=gridStep){ ctx.moveTo(x,startY); ctx.lineTo(x,endY);} for(let y=startY;y<=endY;y+=gridStep){ ctx.moveTo(startX,y); ctx.lineTo(endX,y);} ctx.stroke(); ctx.restore(); }
-    // コンポーネント描画
-  const macroMap=new Map<string,{w:number;h:number;raw:string}>(); const macroMapLower=new Map<string,{w:number;h:number;raw:string}>(); const macroMapNoUnderscore=new Map<string,{w:number;h:number;raw:string}>();
-  if(lef){ for(const m of lef.macros){ macroMap.set(m.name,{w:m.size.width,h:m.size.height,raw:m.name}); macroMapLower.set(m.name.toLowerCase(),{w:m.size.width,h:m.size.height,raw:m.name}); macroMapNoUnderscore.set(m.name.replace(/_/g,'').toLowerCase(),{w:m.size.width,h:m.size.height,raw:m.name}); } }
-    const resolveMacro=(name:string)=>{ const original=name; const trimmed=name.replace(/;$/,''); let dim=macroMap.get(trimmed)||macroMap.get(original); if(!dim){ dim=macroMapLower.get(trimmed.toLowerCase())||macroMapLower.get(original.toLowerCase()); } if(!dim){ const k=trimmed.replace(/_/g,'').toLowerCase(); dim=macroMapNoUnderscore.get(k); } return dim; };
-  const PLACEHOLDER=2; // µm 固定サイズ
-    ctx.save(); ctx.lineWidth=1/absScale; def.components.forEach((c,idx)=>{ if(!c.placed) return; const dim=resolveMacro(c.macro); const rawOrient=(c.orient||'N'); const orient=normalizeOrient(rawOrient); const xUm=dbuToUm(c.x); const yUm=dbuToUm(c.y); let wUm=dim?dim.w:PLACEHOLDER; let hUm=dim?dim.h:PLACEHOLDER; const swapped=/^(E|W|FE|FW)$/.test(orient); if(dim && swapped){ wUm=dim.h; hUm=dim.w; } // 追加: オリエンテーション別カラー (軽い区別)
+    // コンポーネント描画 (ビューポート外をカリング)
+    const t0=performance.now();
+    const PLACEHOLDER=2; // µm 固定サイズ
+    const leftWorld = (-pan.x)/absScale;
+    const topWorld = (-pan.y)/absScale;
+    const rightWorld = (cssW - pan.x)/absScale;
+    const bottomWorld = (cssH - pan.y)/absScale;
+    const colorMap:Record<string,string>={ N:'rgba(0,123,255,0.85)', S:'rgba(0,92,191,0.85)', E:'rgba(40,167,69,0.85)', W:'rgba(32,140,58,0.85)', FN:'rgba(255,193,7,0.85)', FS:'rgba(255,159,64,0.85)', FE:'rgba(111,66,193,0.85)', FW:'rgba(102,16,242,0.85)' };
+    let visible=0, culled=0;
+    ctx.save(); ctx.lineWidth=1/absScale;
+  def.components.forEach((c)=>{ if(!c.placed){ return; } const resolver=resolveMacroRef.current; const dim=resolver?resolver(c.macro):undefined; const rawOrient=(c.orient||'N'); const orient=normalizeOrient(rawOrient); const xUm=dbuToUm(c.x); const yUm=dbuToUm(c.y); let wUm=dim?dim.w:PLACEHOLDER; let hUm=dim?dim.h:PLACEHOLDER; const swapped=/^(E|W|FE|FW)$/.test(orient); if(dim && swapped){ wUm=dim.h; hUm=dim.w; }
+      // カリング判定
+      if(xUm+wUm < leftWorld || xUm > rightWorld || yUm+hUm < topWorld || yUm > bottomWorld){ culled++; return; }
+      visible++;
       if(dim){
-        const colorMap:Record<string,string>={ N:'rgba(0,123,255,0.85)', S:'rgba(0,92,191,0.85)', E:'rgba(40,167,69,0.85)', W:'rgba(32,140,58,0.85)', FN:'rgba(255,193,7,0.85)', FS:'rgba(255,159,64,0.85)', FE:'rgba(111,66,193,0.85)', FW:'rgba(102,16,242,0.85)' };
         ctx.strokeStyle=colorMap[orient]||'rgba(0,123,255,0.85)';
         ctx.strokeRect(xUm,yUm,wUm,hUm);
-        // 小さな向き表示 (三角マーカー)
-        if(wUm>0.4 && hUm>0.4){
-          ctx.save(); ctx.fillStyle=ctx.strokeStyle; ctx.beginPath();
-          const cx=xUm+0.3; const cy=yUm+0.3; const size=0.25; // µm
-          switch(orient){
-            case 'N': case 'FN': ctx.moveTo(cx,cy); ctx.lineTo(cx+size,cy); ctx.lineTo(cx+size/2,cy+size); break;
-            case 'S': case 'FS': ctx.moveTo(cx,cy+size); ctx.lineTo(cx+size,cy+size); ctx.lineTo(cx+size/2,cy); break;
-            case 'E': case 'FE': ctx.moveTo(cx,cy); ctx.lineTo(cx,cy+size); ctx.lineTo(cx+size,cy+size/2); break;
-            case 'W': case 'FW': ctx.moveTo(cx+size,cy); ctx.lineTo(cx+size,cy+size); ctx.lineTo(cx,cy+size/2); break;
-          }
-          ctx.closePath(); ctx.fill(); ctx.restore();
-        }
+        if(wUm>0.4 && hUm>0.4){ ctx.save(); ctx.fillStyle=ctx.strokeStyle; ctx.beginPath(); const cx=xUm+0.3; const cy=yUm+0.3; const size=0.25; switch(orient){ case 'N': case 'FN': ctx.moveTo(cx,cy); ctx.lineTo(cx+size,cy); ctx.lineTo(cx+size/2,cy+size); break; case 'S': case 'FS': ctx.moveTo(cx,cy+size); ctx.lineTo(cx+size,cy+size); ctx.lineTo(cx+size/2,cy); break; case 'E': case 'FE': ctx.moveTo(cx,cy); ctx.lineTo(cx,cy+size); ctx.lineTo(cx+size,cy+size/2); break; case 'W': case 'FW': ctx.moveTo(cx+size,cy); ctx.lineTo(cx+size,cy+size); ctx.lineTo(cx,cy+size/2); break; } ctx.closePath(); ctx.fill(); ctx.restore(); }
       } else {
         ctx.save(); ctx.setLineDash([4/absScale,3/absScale]); ctx.strokeStyle='rgba(220,53,69,0.85)'; ctx.strokeRect(xUm,yUm,wUm,hUm); ctx.restore();
       }
-      if((import.meta as any)?.env?.DEV && idx<4){ /* eslint-disable no-console */ console.log('[DEFLayoutViewer]', c.name, c.macro, rawOrient,'->',orient, dim? 'resolved':'placeholder', {w:wUm,h:hUm}); /* eslint-enable no-console */ }
-    }); ctx.restore();
-    ctx.restore(); },[containerSize.width,containerSize.height,pan.x,pan.y,absScale,dieArea.x1,dieArea.y1,dieWUm,dieHUm,lef,def.components,dbuToUm]);
-  useEffect(()=>{ draw(); },[draw]);
+    });
+    ctx.restore();
+    ctx.restore();
+    const t1=performance.now();
+    setPerf({ total: def.components.length, visible, culled, drawMs: t1-t0 });
+  },[containerSize.width,containerSize.height,pan.x,pan.y,absScale,dieArea.x1,dieArea.y1,dieWUm,dieHUm,def.components,dbuToUm]);
+
+  // マクロ解決をメモ化 (描画毎に Map を構築しない)
+  const resolveMacroRef = useRef<((name:string)=>{w:number;h:number;raw:string}|undefined)>(undefined);
+  useEffect(()=>{ const macroMap=new Map<string,{w:number;h:number;raw:string}>(); const macroMapLower=new Map<string,{w:number;h:number;raw:string}>(); const macroMapNoUnderscore=new Map<string,{w:number;h:number;raw:string}>(); if(lef){ for(const m of lef.macros){ macroMap.set(m.name,{w:m.size.width,h:m.size.height,raw:m.name}); macroMapLower.set(m.name.toLowerCase(),{w:m.size.width,h:m.size.height,raw:m.name}); macroMapNoUnderscore.set(m.name.replace(/_/g,'').toLowerCase(),{w:m.size.width,h:m.size.height,raw:m.name}); } } const resolve=(name:string)=>{ const original=name; const trimmed=name.replace(/;$/,''); return macroMap.get(trimmed)||macroMap.get(original)||macroMapLower.get(trimmed.toLowerCase())||macroMapLower.get(original.toLowerCase())||macroMapNoUnderscore.get(trimmed.replace(/_/g,'').toLowerCase())||undefined; }; resolveMacroRef.current=resolve; },[lef]);
+
+  // rAF スロットリング: 状態変化ごとに複数回 draw が走らないように
+  const drawRequestedRef = useRef(false);
+  const requestDraw = useCallback(()=>{ if(drawRequestedRef.current) return; drawRequestedRef.current=true; requestAnimationFrame(()=>{ drawRequestedRef.current=false; draw(); }); },[draw]);
+  useEffect(()=>{ requestDraw(); },[requestDraw,containerSize.width,containerSize.height,pan.x,pan.y,absScale,def.components]);
 
   const handleWheel=(e:React.WheelEvent)=>{ e.preventDefault();
   // 初期フィット予約が残っていればキャンセル
@@ -173,6 +181,12 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
         <div style={{position:'absolute',left:6,bottom:6,zIndex:15,background:'rgba(0,0,0,0.55)',color:'#fff',padding:'2px 6px',fontSize:11,borderRadius:4,display:'flex',gap:6}}>
           <span>{cursorUm.x.toFixed(2)}, {cursorUm.y.toFixed(2)} µm</span>
           <span style={{opacity:0.75}}>scale {absScale.toFixed(2)} px/µm</span>
+        </div>
+      )}
+      {perf && (
+        <div style={{position:'absolute',right:6,bottom:6,zIndex:15,background:'rgba(0,0,0,0.55)',color:'#fff',padding:'2px 6px',fontSize:10,borderRadius:4,lineHeight:1.2}}>
+          <div>draw {perf.drawMs.toFixed(1)} ms</div>
+          <div>vis {perf.visible}/{perf.total} (culled {perf.culled})</div>
         </div>
       )}
       {showDebug && debugRows.length>0 && (
