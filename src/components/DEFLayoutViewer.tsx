@@ -21,8 +21,10 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   const dieWUm = Math.max(1, dbuToUm(dieArea.x2 - dieArea.x1));
   const dieHUm = Math.max(1, dbuToUm(dieArea.y2 - dieArea.y1));
 
-  useEffect(()=>{ if(!containerRef.current) return; const el=containerRef.current; const update=()=>{ const r=el.getBoundingClientRect(); setContainerSize({width:r.width,height:r.height}); }; update(); const ro=new ResizeObserver(update); ro.observe(el); return ()=>ro.disconnect(); },[]);
-
+  const userInteractedRef = useRef(false);
+  const initialFitDoneRef = useRef(false);
+  // 初期フィット用の requestAnimationFrame ID 保持 (ユーザー操作でキャンセルする)
+  const pendingFitRafRef = useRef<number| null>(null);
   const computeFit = useCallback(()=>{
     const P=0.05;
     const availW=containerSize.width*(1-P*2);
@@ -34,7 +36,16 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     setPan({ x:(containerSize.width-viewW)/2 - dbuToUm(dieArea.x1)*s, y:(containerSize.height-viewH)/2 - dbuToUm(dieArea.y1)*s });
   // 依存を最小化 (units 変更やダイ寸法/コンテナ寸法変更時のみリフィット)
   },[containerSize.width,containerSize.height,dieWUm,dieHUm,dieArea.x1,dieArea.y1,dbuToUm]);
-  useEffect(()=>{ computeFit(); },[computeFit]);
+  useEffect(()=>{ if(!containerRef.current) return; const el=containerRef.current; const update=()=>{ const r=el.getBoundingClientRect(); setContainerSize({width:r.width,height:r.height}); if(!initialFitDoneRef.current && !userInteractedRef.current){ // 既存の予約があればキャンセル
+        if(pendingFitRafRef.current!=null){ cancelAnimationFrame(pendingFitRafRef.current); }
+        pendingFitRafRef.current = requestAnimationFrame(()=>{ // 実行直前に再チェック (操作後のリセットを防ぐ)
+          if(initialFitDoneRef.current || userInteractedRef.current) return; // ユーザー操作後はスキップ
+          computeFit();
+          initialFitDoneRef.current=true;
+          pendingFitRafRef.current=null;
+        });
+      } }; update(); const ro=new ResizeObserver(update); ro.observe(el); return ()=>{ ro.disconnect(); if(pendingFitRafRef.current!=null) cancelAnimationFrame(pendingFitRafRef.current); }; },[computeFit]);
+  // 以前の自動フィット副作用は ResizeObserver 内に統合済み
   const absScale = baseScale * zoom;
 
   // オリエンテーション正規化 (GDS系表記→LEF/DEF正規表記)
@@ -92,6 +103,9 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   useEffect(()=>{ draw(); },[draw]);
 
   const handleWheel=(e:React.WheelEvent)=>{ e.preventDefault();
+  // 初期フィット予約が残っていればキャンセル
+  if(pendingFitRafRef.current!=null){ cancelAnimationFrame(pendingFitRafRef.current); pendingFitRafRef.current=null; }
+  userInteractedRef.current = true;
     // Ctrlキー押下時はズーム倍率を少し大きくする
     const up = e.deltaY < 0;
     const factorBase = e.ctrlKey ? 1.2 : 1.1;
@@ -99,6 +113,8 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     setZoom(prev=>{ const nz=Math.min(120,Math.max(0.02,prev*factor)); if(nz===prev) return prev; const rect=containerRef.current?.getBoundingClientRect(); if(rect){ const cx=(e.clientX-rect.left-pan.x)/(baseScale*prev); const cy=(e.clientY-rect.top-pan.y)/(baseScale*prev); setPan({ x:e.clientX-rect.left-cx*baseScale*nz, y:e.clientY-rect.top-cy*baseScale*nz }); } return nz; }); };
   const onMouseDown=(e:React.MouseEvent)=>{ // 左 or 中クリックでパン開始
     if(e.button!==0 && e.button!==1) return;
+  if(pendingFitRafRef.current!=null){ cancelAnimationFrame(pendingFitRafRef.current); pendingFitRafRef.current=null; }
+  userInteractedRef.current = true;
     panStart.current={x:e.clientX,y:e.clientY,origX:pan.x,origY:pan.y}; setIsPanning(true);
   };
   const onMouseMove=(e:React.MouseEvent)=>{
@@ -116,7 +132,12 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   const onDoubleClick=()=>{ computeFit(); };
   const zoomIn=()=>setZoom(z=>Math.min(80,z*1.2));
   const zoomOut=()=>setZoom(z=>Math.max(0.05,z/1.2));
-  const resetView=()=>computeFit();
+  const resetView=()=>{ // ユーザー明示操作なので初期フィット扱いを再設定
+    if(pendingFitRafRef.current!=null){ cancelAnimationFrame(pendingFitRafRef.current); pendingFitRafRef.current=null; }
+    userInteractedRef.current=false; // リセット後に再度フィット → 直後のリサイズで再フィットさせたい場合は false のまま
+    initialFitDoneRef.current=true; // 再度自動初期フィットを走らせる必要はない
+    computeFit();
+  };
 
   // Debug用テーブルデータ (DEV時 & showDebug時のみ計算)
   const debugRows = useMemo(()=>{
