@@ -15,6 +15,10 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   const [showDebug, setShowDebug] = useState(false);
   const [cursorUm, setCursorUm] = useState<{x:number;y:number}|null>(null);
   const [perf, setPerf] = useState<{total:number;visible:number;culled:number;drawMs:number}|null>(null);
+  // LOD 閾値 (absScale 基準)
+  const LOD_HIGH = 1;      // 向きマーカー表示 & 詳細
+  const LOD_GRID_MIN = 0.15; // グリッド表示下限
+  const LOD_SAMPLE_LOW = 0.08; // これ未満なら矩形サンプリング
   const panStart = useRef<{x:number;y:number;origX:number;origY:number}|null>(null);
   const { dieArea, units } = def;
   // NOTE: dbuToUm を useCallback 化して参照の変化で computeFit が毎レンダー呼ばれズームが初期化される問題を防ぐ
@@ -69,41 +73,52 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     }
   };
 
-  const draw = useCallback(()=>{ const canvas=canvasRef.current; if(!canvas) return; const ctx=canvas.getContext('2d'); if(!ctx) return; const dpr=window.devicePixelRatio||1; const cssW=containerSize.width; const cssH=containerSize.height; if(canvas.width!==Math.round(cssW*dpr)||canvas.height!==Math.round(cssH*dpr)){ canvas.width=Math.round(cssW*dpr); canvas.height=Math.round(cssH*dpr); canvas.style.width=cssW+'px'; canvas.style.height=cssH+'px'; } ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cssW,cssH); ctx.translate(pan.x,pan.y); ctx.scale(absScale,absScale); // ダイ枠
+  const draw = useCallback(()=>{ const canvas=canvasRef.current; if(!canvas) return; const ctx=canvas.getContext('2d'); if(!ctx) return; const dpr=window.devicePixelRatio||1; const cssW=containerSize.width; const cssH=containerSize.height; if(canvas.width!==Math.round(cssW*dpr)||canvas.height!==Math.round(cssH*dpr)){ canvas.width=Math.round(cssW*dpr); canvas.height=Math.round(cssH*dpr); canvas.style.width=cssW+'px'; canvas.style.height=cssH+'px'; } const start=performance.now(); ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cssW,cssH); ctx.translate(pan.x,pan.y); ctx.scale(absScale,absScale); // ダイ枠
     ctx.save(); ctx.lineWidth=2/absScale; ctx.strokeStyle='#222'; ctx.setLineDash([8/absScale,6/absScale]); ctx.strokeRect(dbuToUm(dieArea.x1),dbuToUm(dieArea.y1),dieWUm,dieHUm); ctx.setLineDash([]); ctx.restore();
-    // グリッド
-    const targetCellPx=80; const cellUm=targetCellPx/absScale; if(cellUm>0){ const stepRaw=cellUm; const mag=Math.pow(10,Math.floor(Math.log10(stepRaw))); const norm=stepRaw/mag; let gridStep=mag; if(norm>5) gridStep=10*mag; else if(norm>2) gridStep=5*mag; else if(norm>1) gridStep=2*mag; const startX=Math.floor(dbuToUm(dieArea.x1)/gridStep)*gridStep; const endX=dbuToUm(dieArea.x1)+dieWUm; const startY=Math.floor(dbuToUm(dieArea.y1)/gridStep)*gridStep; const endY=dbuToUm(dieArea.y1)+dieHUm; ctx.save(); ctx.lineWidth=1/absScale; ctx.strokeStyle='rgba(0,0,0,0.08)'; ctx.beginPath(); for(let x=startX;x<=endX;x+=gridStep){ ctx.moveTo(x,startY); ctx.lineTo(x,endY);} for(let y=startY;y<=endY;y+=gridStep){ ctx.moveTo(startX,y); ctx.lineTo(endX,y);} ctx.stroke(); ctx.restore(); }
-    // コンポーネント描画 (ビューポート外をカリング)
-    const t0=performance.now();
-    const PLACEHOLDER=2; // µm 固定サイズ
-    const leftWorld = (-pan.x)/absScale;
-    const topWorld = (-pan.y)/absScale;
-    const rightWorld = (cssW - pan.x)/absScale;
-    const bottomWorld = (cssH - pan.y)/absScale;
-    const colorMap:Record<string,string>={ N:'rgba(0,123,255,0.85)', S:'rgba(0,92,191,0.85)', E:'rgba(40,167,69,0.85)', W:'rgba(32,140,58,0.85)', FN:'rgba(255,193,7,0.85)', FS:'rgba(255,159,64,0.85)', FE:'rgba(111,66,193,0.85)', FW:'rgba(102,16,242,0.85)' };
+    // グリッド (LOD)
+    if(absScale>=LOD_GRID_MIN){ const gridPath = getGridPath(); if(gridPath){ ctx.save(); ctx.lineWidth=1/absScale; ctx.strokeStyle='rgba(0,0,0,0.08)'; ctx.stroke(gridPath); ctx.restore(); } }
+    // コンポーネント
+    const leftWorld = (-pan.x)/absScale, topWorld=(-pan.y)/absScale, rightWorld=(cssW-pan.x)/absScale, bottomWorld=(cssH-pan.y)/absScale;
     let visible=0, culled=0;
-    ctx.save(); ctx.lineWidth=1/absScale;
-  def.components.forEach((c)=>{ if(!c.placed){ return; } const resolver=resolveMacroRef.current; const dim=resolver?resolver(c.macro):undefined; const rawOrient=(c.orient||'N'); const orient=normalizeOrient(rawOrient); const xUm=dbuToUm(c.x); const yUm=dbuToUm(c.y); let wUm=dim?dim.w:PLACEHOLDER; let hUm=dim?dim.h:PLACEHOLDER; const swapped=/^(E|W|FE|FW)$/.test(orient); if(dim && swapped){ wUm=dim.h; hUm=dim.w; }
-      // カリング判定
-      if(xUm+wUm < leftWorld || xUm > rightWorld || yUm+hUm < topWorld || yUm > bottomWorld){ culled++; return; }
+    const highDetail = absScale >= LOD_HIGH;
+    const sampleLow = absScale < LOD_SAMPLE_LOW; // サンプリング描画
+    const sampleStep = sampleLow ? Math.ceil(1/Math.max(0.05,absScale)) : 1; // 粗い時ほど間引き
+    // 色別 Path 集約 (低〜中 LOD のみ)
+    const pathMap:Record<string,Path2D> = {};
+    const markerPaths:Record<string,Path2D> = {};
+    const getPath=(color:string)=>{ return pathMap[color]||(pathMap[color]=new Path2D()); };
+    const getMarkerPath=(color:string)=>{ return markerPaths[color]||(markerPaths[color]=new Path2D()); };
+    precomputedRef.current.forEach((pc,idx)=>{ if(idx % sampleStep!==0) return; // サンプリング
+      // カリング
+      if(pc.x+pc.w < leftWorld || pc.x > rightWorld || pc.y+pc.h < topWorld || pc.y > bottomWorld){ culled++; return; }
       visible++;
-      if(dim){
-        ctx.strokeStyle=colorMap[orient]||'rgba(0,123,255,0.85)';
-        ctx.strokeRect(xUm,yUm,wUm,hUm);
-        if(wUm>0.4 && hUm>0.4){ ctx.save(); ctx.fillStyle=ctx.strokeStyle; ctx.beginPath(); const cx=xUm+0.3; const cy=yUm+0.3; const size=0.25; switch(orient){ case 'N': case 'FN': ctx.moveTo(cx,cy); ctx.lineTo(cx+size,cy); ctx.lineTo(cx+size/2,cy+size); break; case 'S': case 'FS': ctx.moveTo(cx,cy+size); ctx.lineTo(cx+size,cy+size); ctx.lineTo(cx+size/2,cy); break; case 'E': case 'FE': ctx.moveTo(cx,cy); ctx.lineTo(cx,cy+size); ctx.lineTo(cx+size,cy+size/2); break; case 'W': case 'FW': ctx.moveTo(cx+size,cy); ctx.lineTo(cx+size,cy+size); ctx.lineTo(cx,cy+size/2); break; } ctx.closePath(); ctx.fill(); ctx.restore(); }
-      } else {
-        ctx.save(); ctx.setLineDash([4/absScale,3/absScale]); ctx.strokeStyle='rgba(220,53,69,0.85)'; ctx.strokeRect(xUm,yUm,wUm,hUm); ctx.restore();
+      const p = getPath(pc.color);
+      p.rect(pc.x,pc.y,pc.w,pc.h);
+      if(highDetail && pc.marker){ const mp=getMarkerPath(pc.color); const size=0.25; const cx=pc.x+0.3; const cy=pc.y+0.3; switch(pc.orient){ case 'N': case 'FN': mp.moveTo(cx,cy); mp.lineTo(cx+size,cy); mp.lineTo(cx+size/2,cy+size); break; case 'S': case 'FS': mp.moveTo(cx,cy+size); mp.lineTo(cx+size,cy+size); mp.lineTo(cx+size/2,cy); break; case 'E': case 'FE': mp.moveTo(cx,cy); mp.lineTo(cx,cy+size); mp.lineTo(cx+size,cy+size/2); break; case 'W': case 'FW': mp.moveTo(cx+size,cy); mp.lineTo(cx+size,cy+size); mp.lineTo(cx,cy+size/2); break; }
       }
     });
+    // Stroke batched paths
+    ctx.save(); ctx.lineWidth=1/absScale; Object.entries(pathMap).forEach(([color,p])=>{ ctx.strokeStyle=color; ctx.stroke(p); }); if(highDetail){ Object.entries(markerPaths).forEach(([color,p])=>{ ctx.fillStyle=color; ctx.fill(p,'nonzero'); }); } ctx.restore();
     ctx.restore();
-    ctx.restore();
-    const t1=performance.now();
-    setPerf({ total: def.components.length, visible, culled, drawMs: t1-t0 });
-  },[containerSize.width,containerSize.height,pan.x,pan.y,absScale,dieArea.x1,dieArea.y1,dieWUm,dieHUm,def.components,dbuToUm]);
+    const end=performance.now();
+    setPerf({ total: precomputedRef.current.length, visible, culled, drawMs: end-start });
+  },[containerSize.width,containerSize.height,pan.x,pan.y,absScale,dieArea.x1,dieArea.y1,dieWUm,dieHUm,dbuToUm]);
 
   // マクロ解決をメモ化 (描画毎に Map を構築しない)
   const resolveMacroRef = useRef<((name:string)=>{w:number;h:number;raw:string}|undefined)>(undefined);
-  useEffect(()=>{ const macroMap=new Map<string,{w:number;h:number;raw:string}>(); const macroMapLower=new Map<string,{w:number;h:number;raw:string}>(); const macroMapNoUnderscore=new Map<string,{w:number;h:number;raw:string}>(); if(lef){ for(const m of lef.macros){ macroMap.set(m.name,{w:m.size.width,h:m.size.height,raw:m.name}); macroMapLower.set(m.name.toLowerCase(),{w:m.size.width,h:m.size.height,raw:m.name}); macroMapNoUnderscore.set(m.name.replace(/_/g,'').toLowerCase(),{w:m.size.width,h:m.size.height,raw:m.name}); } } const resolve=(name:string)=>{ const original=name; const trimmed=name.replace(/;$/,''); return macroMap.get(trimmed)||macroMap.get(original)||macroMapLower.get(trimmed.toLowerCase())||macroMapLower.get(original.toLowerCase())||macroMapNoUnderscore.get(trimmed.replace(/_/g,'').toLowerCase())||undefined; }; resolveMacroRef.current=resolve; },[lef]);
+  useEffect(()=>{ const macroMap=new Map<string,{w:number;h:number;raw:string}>(); const macroMapLower=new Map<string,{w:number;h:number;raw:string}>(); const macroMapNoUnderscore=new Map<string,{w:number;h:number;raw:string}>(); if(lef){ for(const m of lef.macros){ macroMap.set(m.name,{w:m.size.width,h:m.size.height,raw:m.name}); macroMapLower.set(m.name.toLowerCase(),{w:m.size.width,h:m.size.height,raw:m.name}); macroMapNoUnderscore.set(m.name.replace(/_/g,'').toLowerCase(),{w:m.size.width,h:m.size.height,raw:m.name}); } } const resolve=(name:string)=>{ const original=name; const trimmed=name.replace(/;$/,''); return macroMap.get(trimmed)||macroMap.get(original)||macroMapLower.get(trimmed.toLowerCase())||macroMapLower.get(original.toLowerCase())||macroMapNoUnderscore.get(trimmed.replace(/_/g,'').toLowerCase())||undefined; }; resolveMacroRef.current=resolve; // Precompute component dims
+    const colorMap:Record<string,string>={ N:'rgba(0,123,255,0.85)', S:'rgba(0,92,191,0.85)', E:'rgba(40,167,69,0.85)', W:'rgba(32,140,58,0.85)', FN:'rgba(255,193,7,0.85)', FS:'rgba(255,159,64,0.85)', FE:'rgba(111,66,193,0.85)', FW:'rgba(102,16,242,0.85)' };
+    const pre=[] as {x:number;y:number;w:number;h:number;color:string;marker:boolean;orient:string}[]; const PLACEHOLDER=2;
+    for(const c of def.components){ if(!c.placed) continue; const dim=resolve(c.macro); const orient=normalizeOrient(c.orient||'N'); let w=dim?dim.w:PLACEHOLDER; let h=dim?dim.h:PLACEHOLDER; const swapped=/^(E|W|FE|FW)$/.test(orient); if(dim && swapped){ w=dim.h; h=dim.w; } pre.push({ x:dbuToUm(c.x), y:dbuToUm(c.y), w, h, color: colorMap[orient]||'rgba(0,123,255,0.85)', marker: w>0.4 && h>0.4, orient }); }
+    precomputedRef.current = pre; },[lef,def.components,dbuToUm]);
+
+  // 事前計算結果保持
+  const precomputedRef = useRef<{x:number;y:number;w:number;h:number;color:string;marker:boolean;orient:string}[]>([]);
+
+  // グリッド Path キャッシュ
+  const gridCacheRef = useRef<{step:number; path:Path2D}|null>(null);
+  const getGridPath = useCallback(()=>{ const targetCellPx=80; const cellUm=targetCellPx/absScale; if(cellUm<=0) return null; const stepRaw=cellUm; const mag=Math.pow(10,Math.floor(Math.log10(stepRaw))); const norm=stepRaw/mag; let gridStep=mag; if(norm>5) gridStep=10*mag; else if(norm>2) gridStep=5*mag; else if(norm>1) gridStep=2*mag; const cache=gridCacheRef.current; if(cache && cache.step===gridStep) return cache.path; // rebuild
+    const startX=Math.floor(dbuToUm(dieArea.x1)/gridStep)*gridStep; const endX=dbuToUm(dieArea.x1)+dieWUm; const startY=Math.floor(dbuToUm(dieArea.y1)/gridStep)*gridStep; const endY=dbuToUm(dieArea.y1)+dieHUm; const p=new Path2D(); for(let x=startX;x<=endX;x+=gridStep){ p.moveTo(x,startY); p.lineTo(x,endY);} for(let y=startY;y<=endY;y+=gridStep){ p.moveTo(startX,y); p.lineTo(endX,y);} gridCacheRef.current={step:gridStep,path:p}; return p; },[absScale,dbuToUm,dieArea.x1,dieArea.y1,dieWUm,dieHUm]);
 
   // rAF スロットリング: 状態変化ごとに複数回 draw が走らないように
   const drawRequestedRef = useRef(false);
