@@ -16,13 +16,24 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   const [cursorUm, setCursorUm] = useState<{x:number;y:number}|null>(null);
   const panStart = useRef<{x:number;y:number;origX:number;origY:number}|null>(null);
   const { dieArea, units } = def;
-  const dbuToUm = (v:number) => v / units;
+  // NOTE: dbuToUm を useCallback 化して参照の変化で computeFit が毎レンダー呼ばれズームが初期化される問題を防ぐ
+  const dbuToUm = useCallback((v:number) => v / units, [units]);
   const dieWUm = Math.max(1, dbuToUm(dieArea.x2 - dieArea.x1));
   const dieHUm = Math.max(1, dbuToUm(dieArea.y2 - dieArea.y1));
 
   useEffect(()=>{ if(!containerRef.current) return; const el=containerRef.current; const update=()=>{ const r=el.getBoundingClientRect(); setContainerSize({width:r.width,height:r.height}); }; update(); const ro=new ResizeObserver(update); ro.observe(el); return ()=>ro.disconnect(); },[]);
 
-  const computeFit = useCallback(()=>{ const P=0.05; const availW=containerSize.width*(1-P*2); const availH=containerSize.height*(1-P*2); const s=Math.min(availW/dieWUm, availH/dieHUm); setBaseScale(s); setZoom(1); const viewW=dieWUm*s; const viewH=dieHUm*s; setPan({ x:(containerSize.width-viewW)/2 - dbuToUm(dieArea.x1)*s, y:(containerSize.height-viewH)/2 - dbuToUm(dieArea.y1)*s }); },[containerSize.width,containerSize.height,dieWUm,dieHUm,dieArea.x1,dieArea.y1,dbuToUm]);
+  const computeFit = useCallback(()=>{
+    const P=0.05;
+    const availW=containerSize.width*(1-P*2);
+    const availH=containerSize.height*(1-P*2);
+    const s=Math.min(availW/dieWUm, availH/dieHUm);
+    setBaseScale(s);
+    setZoom(1);
+    const viewW=dieWUm*s; const viewH=dieHUm*s;
+    setPan({ x:(containerSize.width-viewW)/2 - dbuToUm(dieArea.x1)*s, y:(containerSize.height-viewH)/2 - dbuToUm(dieArea.y1)*s });
+  // 依存を最小化 (units 変更やダイ寸法/コンテナ寸法変更時のみリフィット)
+  },[containerSize.width,containerSize.height,dieWUm,dieHUm,dieArea.x1,dieArea.y1,dbuToUm]);
   useEffect(()=>{ computeFit(); },[computeFit]);
   const absScale = baseScale * zoom;
 
