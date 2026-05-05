@@ -303,7 +303,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
         </Card.Body>
       </Card>
 
-      <Row className="flex-grow-1 g-2" style={{ minHeight: 0 }}>
+      <Row className="flex-grow-1 g-2 row-fill">
         <Col md={3} lg={2} className="h-100">
           <Card className="h-100">
             <Card.Header className="py-2">Cells / Layers</Card.Header>
@@ -351,7 +351,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 {allLayers.map((layer) => (
                   <ListGroup.Item key={layer} className="px-0 py-1 d-flex align-items-center gap-2">
                     <Form.Check checked={visibleLayers.has(layer)} onChange={() => toggleLayer(layer)} />
-                    <span style={{ width: 14, height: 14, background: layerColor(layer), display: 'inline-block', border: '1px solid #777' }} />
+                    <span className="layer-swatch" style={{ background: layerColor(layer) }} />
                     <span>L{layer}</span>
                   </ListGroup.Item>
                 ))}
@@ -364,8 +364,8 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
             <Card.Body className="p-0 position-relative">
               <div
                 ref={containerRef}
-                className="w-100 h-100"
-                style={{ cursor: isPanning ? 'grabbing' : 'grab', overflow: 'hidden' }}
+                style={{ cursor: isPanning ? 'grabbing' : 'grab' }}
+                className="w-100 h-100 overflow-hidden"
                 onWheel={handleWheel}
                 onMouseDown={onMouseDown}
                 onMouseMove={onMouseMove}
@@ -373,7 +373,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 onMouseLeave={() => { endPan(); setCursor(null); }}
                 onDoubleClick={fit}
               >
-                <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0 }} />
+                <canvas ref={canvasRef} className="canvas-overlay-abs" />
                 {(import.meta.env.DEV || cursor) && (
                   <div className="position-absolute bottom-0 start-0 m-2 small bg-light border rounded px-2 py-1">
                     {import.meta.env.DEV && <>visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms</>}

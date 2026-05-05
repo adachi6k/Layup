@@ -222,8 +222,8 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   return def.components.slice(0,200).map(c=>{ const dim=resolve(c.macro); const raw=(c.orient||'N'); const orient=normalizeOrient(raw); if(!dim) return {name:c.name,macro:c.macro,orient:raw,macroW:0,macroH:0,drawW:PLACEHOLDER,drawH:PLACEHOLDER,swapped:false,found:false}; let w=dim.w,h=dim.h; const swapped=/^(E|W|FE|FW)$/.test(orient); if(swapped){ w=dim.h; h=dim.w; } return {name:c.name,macro:c.macro,resolved:dim.raw,orient,macroW:dim.w,macroH:dim.h,drawW:w,drawH:h,swapped,found:true}; });
   },[def.components,lef,showDebug]);
 
-  return <div className="d-flex flex-column h-100">
-    <div style={{padding:'4px 6px',background:'#f8f9fa',border:'1px solid #ddd',borderRadius:4,marginBottom:4,display:'flex',alignItems:'center',gap:6,fontSize:12}}>
+  return <div className="def-viewer-root">
+    <div className="def-toolbar">
       <strong className="me-2">DEF Layout</strong>
       <button className="btn btn-sm btn-outline-secondary" onClick={zoomIn}>+</button>
       <button className="btn btn-sm btn-outline-secondary" onClick={zoomOut}>-</button>
@@ -233,33 +233,34 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
       <span className="badge bg-light text-dark">Zoom {zoom.toFixed(2)}</span>
       {unresolvedCount > 0 && <span className="badge bg-warning text-dark" title="Some component macros could not be resolved against the loaded LEF. Load the matching LEF file to fix.">⚠ {unresolvedCount} unresolved</span>}
     </div>
-    <div ref={containerRef} style={{position:'relative',flex:1,overflow:'hidden',border:'1px solid #ddd',borderRadius:4,cursor:isPanning?'grabbing':'default'}}
+    <div ref={containerRef} className="def-canvas-container"
+         style={{cursor:isPanning?'grabbing':'default'}}
          onWheel={handleWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseLeave={onMouseLeave} onMouseUp={endPan} onDoubleClick={onDoubleClick}>
-      <canvas ref={canvasRef} style={{position:'absolute',inset:0}} />
+      <canvas ref={canvasRef} className="canvas-overlay-abs" />
       {def.components.filter(c=>c.placed).length===0 && (
-        <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#666',pointerEvents:'none',background:'rgba(255,255,255,0.6)'}}>
+        <div className="canvas-empty-msg">
           No placed components parsed (check COMPONENTS / + PLACED lines)
         </div>
       )}
       {cursorUm && (
-        <div style={{position:'absolute',left:6,bottom:6,zIndex:15,background:'rgba(0,0,0,0.55)',color:'#fff',padding:'2px 6px',fontSize:11,borderRadius:4,display:'flex',gap:6}}>
+        <div className="canvas-cursor-hud">
           <span>{cursorUm.x.toFixed(2)}, {cursorUm.y.toFixed(2)} µm</span>
           <span style={{opacity:0.75}}>scale {absScale.toFixed(2)} px/µm</span>
         </div>
       )}
       {import.meta.env.DEV && perf && (
-        <div style={{position:'absolute',right:6,bottom:6,zIndex:15,background:'rgba(0,0,0,0.55)',color:'#fff',padding:'2px 6px',fontSize:10,borderRadius:4,lineHeight:1.2}}>
+        <div className="canvas-perf-hud">
           <div>draw {perf.drawMs.toFixed(1)} ms</div>
           <div>vis {perf.visible}/{perf.total} (culled {perf.culled})</div>
         </div>
       )}
       {import.meta.env.DEV && showDebug && debugRows.length>0 && (
-        <div style={{position:'absolute',top:6,right:6,maxHeight:'70%',width:340,overflow:'auto',background:'rgba(255,255,255,0.95)',border:'1px solid #ccc',borderRadius:4,fontSize:11,padding:6,boxShadow:'0 2px 4px rgba(0,0,0,0.2)'}}>
+        <div className="def-debug-panel">
           <div className="d-flex justify-content-between align-items-center mb-1">
             <strong>Components (preview)</strong>
-            <span style={{fontSize:10}}>first {debugRows.length}</span>
+            <span className="small text-muted">first {debugRows.length}</span>
           </div>
-          <div style={{fontSize:10,marginBottom:4}}>
+          <div className="mb-1" style={{fontSize:10}}>
             <span className="badge bg-primary me-1">resolved {debugRows.filter(r=>r.found).length}</span>
             <span className="badge bg-danger">unresolved {debugRows.filter(r=>!r.found).length}</span>
           </div>
@@ -283,12 +284,12 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
               ))}
             </tbody>
           </table>
-          <div style={{marginTop:4,lineHeight:1.2}}>
+          <div className="mt-1" style={{lineHeight:1.2,fontSize:10}}>
             <div>Swapped orientations: E/W/FE/FW (90°/270°)</div>
-            <div className="mt-1" style={{display:'flex',flexWrap:'wrap',gap:4}}>
+            <div className="mt-1 d-flex flex-wrap gap-1">
               <span className="badge bg-warning text-dark">Swapped (E/W/FE/FW)</span>
               <span className="badge bg-danger">Unresolved</span>
-              <span className="badge text-bg-light" style={{border:'1px solid #ccc'}}>dashed red = 2µm placeholder</span>
+              <span className="badge text-bg-light border">dashed red = 2µm placeholder</span>
               <span className="badge" style={{background:'#0d6efd'}}>N</span>
               <span className="badge" style={{background:'#005cbf'}}>S</span>
               <span className="badge" style={{background:'#28a745'}}>E</span>

@@ -4,39 +4,74 @@ import { Container, Row, Col, Alert } from 'react-bootstrap';
 interface FileDropZoneProps {
   onFileLoad: (content: string, filename: string) => void;
   onBinaryFileLoad?: (content: ArrayBuffer, filename: string) => void;
+  onMultipleFilesLoad?: (files: Array<{ content: string | ArrayBuffer; filename: string }>) => void;
+  onMultipleUrlsLoad?: (urls: string[]) => void;
   onUrlLoad?: (url: string) => void;
 }
 
-export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinaryFileLoad, onUrlLoad }) => {
+const ACCEPTED_EXTENSIONS = ['.lef', '.def', '.gds', '.gdsii'];
+
+const isAccepted = (name: string) => ACCEPTED_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
+const isGDS = (name: string) => name.toLowerCase().endsWith('.gds') || name.toLowerCase().endsWith('.gdsii');
+
+export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinaryFileLoad, onMultipleFilesLoad, onMultipleUrlsLoad, onUrlLoad }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const readFile = useCallback((file: File) => {
-    const lower = file.name.toLowerCase();
-    const isTextLayout = lower.endsWith('.lef') || lower.endsWith('.def');
-    const isGDS = lower.endsWith('.gds') || lower.endsWith('.gdsii');
-    if (!isTextLayout && !isGDS) {
-      setError('Please select a .lef, .def, .gds, or .gdsii file');
+  const readAllFiles = useCallback((fileList: File[]) => {
+    const valid = fileList.filter(f => isAccepted(f.name));
+    if (valid.length === 0) {
+      setError('Please select .lef, .def, .gds, or .gdsii files');
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      if (isGDS) {
-        const content = event.target?.result;
-        if (content instanceof ArrayBuffer) onBinaryFileLoad?.(content, file.name);
-      } else {
-        const content = event.target?.result as string;
-        if (content) onFileLoad(content, file.name);
-      }
-    };
-    reader.onerror = () => {
-      setError('Failed to read file');
-    };
+    if (valid.length === 1) {
+      // Single file – use the existing single-file handlers
+      const file = valid[0];
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (isGDS(file.name)) {
+          const content = event.target?.result;
+          if (content instanceof ArrayBuffer) onBinaryFileLoad?.(content, file.name);
+        } else {
+          const content = event.target?.result as string;
+          if (content) onFileLoad(content, file.name);
+        }
+      };
+      reader.onerror = () => setError('Failed to read file');
+      if (isGDS(file.name)) reader.readAsArrayBuffer(file);
+      else reader.readAsText(file);
+      return;
+    }
 
-    if (isGDS) reader.readAsArrayBuffer(file);
-    else reader.readAsText(file);
-  }, [onBinaryFileLoad, onFileLoad]);
+    // Multiple files – read all, then dispatch as a batch
+    Promise.all(
+      valid.map(
+        (file) =>
+          new Promise<{ content: string | ArrayBuffer; filename: string }>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (e) =>
+              resolve({ content: e.target!.result as string | ArrayBuffer, filename: file.name });
+            reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+            if (isGDS(file.name)) reader.readAsArrayBuffer(file);
+            else reader.readAsText(file);
+          }),
+      ),
+    )
+      .then((results) => {
+        if (onMultipleFilesLoad) {
+          onMultipleFilesLoad(results);
+        } else {
+          // Fallback when the consumer does not support batch loading:
+          // dispatch files individually. View mode will reflect the last file processed.
+          results.forEach(({ content, filename }) => {
+            if (content instanceof ArrayBuffer) onBinaryFileLoad?.(content, filename);
+            else onFileLoad(content, filename);
+          });
+        }
+      })
+      .catch((err: Error) => setError(err.message));
+  }, [onBinaryFileLoad, onFileLoad, onMultipleFilesLoad]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -52,30 +87,30 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinary
     e.preventDefault();
     setIsDragging(false);
     setError(null);
-
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
-
-    const file = files[0];
-    readFile(file);
-  }, [readFile]);
+    readAllFiles(files);
+  }, [readAllFiles]);
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
+    setError(null);
+    readAllFiles(Array.from(files));
+    // Reset input so the same file can be re-selected
+    e.target.value = '';
+  }, [readAllFiles]);
 
-    const file = files[0];
-    readFile(file);
-  }, [readFile]);
-
-  const loadSampleFile = useCallback(() => {
-    if (onUrlLoad) {
-      const sampleUrl = `${import.meta.env.BASE_URL}samples/lm_final.gds`;
-      onUrlLoad(sampleUrl);
+  const handleSampleLefDef = useCallback(() => {
+    if (onMultipleUrlsLoad) {
+      onMultipleUrlsLoad([
+        `${import.meta.env.BASE_URL}samples/sample.lef`,
+        `${import.meta.env.BASE_URL}samples/sample.def`,
+      ]);
+    } else {
+      onUrlLoad?.(`${import.meta.env.BASE_URL}samples/sample.lef`);
     }
-  }, [onUrlLoad]);
-
-  return (
+  }, [onMultipleUrlsLoad, onUrlLoad]);  return (
     <Container className="mt-4">
       <Row className="justify-content-center">
         <Col md={8}>
@@ -84,7 +119,7 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinary
               {error}
             </Alert>
           )}
-          
+
           <div
             className={`border-3 border-dashed rounded p-5 text-center ${
               isDragging ? 'border-primary bg-light' : 'border-secondary'
@@ -96,32 +131,54 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinary
           >
             <div className="d-flex flex-column align-items-center justify-content-center h-100">
               <i className="bi bi-file-earmark-arrow-up fs-1 text-muted mb-3"></i>
-              <h4 className="text-muted mb-3">Drop LEF / DEF / GDS file here</h4>
-              <p className="text-muted mb-3">or</p>
-              
+              <h4 className="text-muted mb-2">Drop LEF / DEF / GDS file here</h4>
+              <p className="text-muted small mb-3">
+                <i className="bi bi-info-circle me-1"></i>
+                Drop a <strong>LEF + DEF pair</strong> together to load both at once
+              </p>
+
               <label className="btn btn-primary me-3">
                 <i className="bi bi-folder2-open me-2"></i>
-                Choose File
-                  <input
-                    type="file"
+                Choose File(s)
+                <input
+                  type="file"
                   accept=".lef,.def,.gds,.gdsii"
+                  multiple
                   onChange={handleFileInput}
                   style={{ display: 'none' }}
                 />
               </label>
-              
-              {onUrlLoad && (
-                <button 
-                  className="btn btn-outline-primary"
-                  onClick={loadSampleFile}
-                >
-                  <i className="bi bi-download me-2"></i>
-                  Load LM GDS Sample
-                </button>
-              )}
             </div>
           </div>
-          
+
+          {(onUrlLoad || onMultipleUrlsLoad) && (
+            <div className="mt-3">
+              <p className="text-muted small text-center mb-2">
+                <i className="bi bi-lightning-charge me-1"></i>Load a sample file to get started:
+              </p>
+              <div className="d-flex justify-content-center gap-2 flex-wrap">
+                <button
+                  className="btn btn-outline-primary btn-sm"
+                  onClick={handleSampleLefDef}
+                >
+                  <i className="bi bi-diagram-3 me-1"></i>
+                  Sample LEF + DEF
+                </button>
+                <button
+                  className="btn btn-outline-secondary btn-sm"
+                  onClick={() => onUrlLoad?.(`${import.meta.env.BASE_URL}samples/lm_final.gds`)}
+                >
+                  <i className="bi bi-layers me-1"></i>
+                  Sample GDS
+                </button>
+              </div>
+              <p className="text-muted small text-center mt-2">
+                <i className="bi bi-lightbulb me-1"></i>
+                Drop both <strong>LEF + DEF</strong> files together (or load one then the other) for a combined view.
+              </p>
+            </div>
+          )}
+
           <div className="mt-3 text-center">
             <small className="text-muted">
               Supported formats: LEF (Library Exchange Format), DEF layout, and GDSII layout files

@@ -1,0 +1,67 @@
+VERSION 5.8 ;
+
+DIVIDERCHAR "/" ;
+BUSBITCHARS "[]" ;
+
+DESIGN sample_design ;
+
+UNITS DISTANCE MICRONS 1000 ;
+
+DIEAREA ( 0 0 ) ( 27200 13600 ) ;
+
+ROW ROW_0 core 0 0    N  DO 10 BY 1 STEP 2720 0 ;
+ROW ROW_1 core 0 2720 FS DO 10 BY 1 STEP 2720 0 ;
+ROW ROW_2 core 0 5440 N  DO 10 BY 1 STEP 2720 0 ;
+ROW ROW_3 core 0 8160 FS DO 10 BY 1 STEP 2720 0 ;
+
+COMPONENTS 32 ;
+  - U1  INV_X1   + PLACED (  1360     0 ) N  ;
+  - U2  NAND2_X1 + PLACED (  2720     0 ) N  ;
+  - U3  BUF_X1   + PLACED (  4760     0 ) N  ;
+  - U4  INV_X1   + PLACED (  7480     0 ) N  ;
+  - U5  NAND2_X1 + PLACED (  8840     0 ) N  ;
+  - U6  INV_X1   + PLACED ( 10880     0 ) N  ;
+  - U7  BUF_X1   + PLACED ( 12240     0 ) N  ;
+  - U8  DFF_X1   + PLACED ( 14960     0 ) N  ;
+  - U9  INV_X1   + PLACED ( 20400     0 ) N  ;
+  - U10 BUF_X1   + PLACED ( 21760     0 ) N  ;
+  - U11 INV_X1   + PLACED (  1360  2720 ) FS ;
+  - U12 BUF_X1   + PLACED (  2720  2720 ) FS ;
+  - U13 NAND2_X1 + PLACED (  5440  2720 ) FS ;
+  - U14 INV_X1   + PLACED (  7480  2720 ) FS ;
+  - U15 DFF_X1   + PLACED (  8840  2720 ) FS ;
+  - U16 INV_X1   + PLACED ( 14280  2720 ) FS ;
+  - U17 NAND2_X1 + PLACED ( 15640  2720 ) FS ;
+  - U18 BUF_X1   + PLACED ( 17680  2720 ) FS ;
+  - U19 INV_X1   + PLACED ( 20400  2720 ) FS ;
+  - U20 INV_X1   + PLACED ( 21760  2720 ) FS ;
+  - U21 NAND2_X1 + PLACED (  1360  5440 ) N  ;
+  - U22 INV_X1   + PLACED (  3400  5440 ) N  ;
+  - U23 BUF_X1   + PLACED (  4760  5440 ) N  ;
+  - U24 DFF_X1   + PLACED (  7480  5440 ) N  ;
+  - U25 INV_X1   + PLACED ( 12920  5440 ) N  ;
+  - U26 NAND2_X1 + PLACED ( 14280  5440 ) N  ;
+  - U27 BUF_X1   + PLACED ( 16320  5440 ) N  ;
+  - U28 INV_X1   + PLACED ( 19040  5440 ) N  ;
+  - U29 INV_X1   + PLACED ( 20400  5440 ) N  ;
+  - U30 BUF_X1   + PLACED ( 21760  5440 ) N  ;
+  - U31 DFF_X1   + PLACED (  1360  8160 ) FS ;
+  - U32 NAND2_X1 + PLACED (  6800  8160 ) FS ;
+END COMPONENTS
+
+PINS 6 ;
+  - clk   + NET clk   + DIRECTION INPUT  + USE CLOCK
+    + PLACED (     0  6800 ) E ;
+  - reset + NET reset + DIRECTION INPUT  + USE SIGNAL
+    + PLACED (     0  2720 ) E ;
+  - in1   + NET in1   + DIRECTION INPUT  + USE SIGNAL
+    + PLACED (     0 10200 ) E ;
+  - in2   + NET in2   + DIRECTION INPUT  + USE SIGNAL
+    + PLACED (     0  3400 ) E ;
+  - out1  + NET out1  + DIRECTION OUTPUT + USE SIGNAL
+    + PLACED ( 27200  6800 ) W ;
+  - out2  + NET out2  + DIRECTION OUTPUT + USE SIGNAL
+    + PLACED ( 27200  3400 ) W ;
+END PINS
+
+END DESIGN
