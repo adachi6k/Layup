@@ -128,7 +128,8 @@ export const useLayoutFiles = () => {
             hasGds = true;
           }
         }
-        // Determine the most useful view mode after batch load
+        // Determine the most useful view mode after batch load.
+        // GDS cannot be combined with LEF/DEF in the same view, so LEF+DEF takes priority.
         if (hasLef && hasDef) setViewMode('split');
         else if (hasGds && !hasLef && !hasDef) setViewMode('gds');
         else if (hasLef) setViewMode('lef');

@@ -61,7 +61,8 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinary
         if (onMultipleFilesLoad) {
           onMultipleFilesLoad(results);
         } else {
-          // Fallback: dispatch one by one
+          // Fallback when the consumer does not support batch loading:
+          // dispatch files individually. View mode will reflect the last file processed.
           results.forEach(({ content, filename }) => {
             if (content instanceof ArrayBuffer) onBinaryFileLoad?.(content, filename);
             else onFileLoad(content, filename);
@@ -176,7 +177,7 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinary
               </div>
               <p className="text-muted small text-center mt-2">
                 <i className="bi bi-lightbulb me-1"></i>
-                Load the <strong>Sample LEF</strong> then the <strong>Sample DEF</strong> (or drop both together) for a combined view.
+                Drop both <strong>LEF + DEF</strong> files together (or load one then the other) for a combined view.
               </p>
             </div>
           )}
