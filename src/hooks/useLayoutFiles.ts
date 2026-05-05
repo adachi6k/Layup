@@ -14,6 +14,15 @@ export type ViewMode = typeof VIEW_MODES[number];
 const isViewMode = (value: string | null): value is ViewMode =>
   VIEW_MODES.includes(value as ViewMode);
 
+const getInitialViewMode = (): ViewMode => {
+  try {
+    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('layoutViewMode') : null;
+    return isViewMode(saved) ? saved : 'split';
+  } catch {
+    return 'split';
+  }
+};
+
 export const useLayoutFiles = () => {
   const [lefData, setLefData] = useState<LEFData | null>(null);
   const [filename, setFilename] = useState<string>('');
@@ -23,10 +32,7 @@ export const useLayoutFiles = () => {
   const [gdsFilename, setGdsFilename] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>(() => {
-    const saved = typeof localStorage !== 'undefined' ? localStorage.getItem('layoutViewMode') : null;
-    return isViewMode(saved) ? saved : 'split';
-  });
+  const [viewMode, setViewMode] = useState<ViewMode>(getInitialViewMode);
 
   useEffect(() => {
     try {
