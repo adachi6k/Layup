@@ -5,6 +5,7 @@ import type {
   GDSPath,
   GDSPoint,
   GDSPolygon,
+  GDSRect,
   GDSReference,
   GDSTransform,
 } from '../types/gds';
@@ -170,6 +171,37 @@ const composeTransform = (parent: GDSTransform, child: GDSTransform): GDSTransfo
   };
 };
 
+/**
+ * Try to classify a set of GDS BOUNDARY/BOX points as an axis-aligned rectangle.
+ * Returns { x1, y1, x2, y2 } if the points form an axis-aligned rect, otherwise null.
+ * GDS boundary polygons typically have 5 points (last = first to close the ring).
+ */
+const tryClassifyRect = (points: GDSPoint[]): { x1: number; y1: number; x2: number; y2: number } | null => {
+  // Unwrap closing point if present (5 points, last == first)
+  const n = points.length;
+  const endIdx =
+    n === 5 && points[n - 1].x === points[0].x && points[n - 1].y === points[0].y ? 4 : n;
+  if (endIdx !== 4) return null;
+
+  const x0 = points[0].x, y0 = points[0].y;
+  const x1 = points[1].x, y1 = points[1].y;
+  const x2 = points[2].x, y2 = points[2].y;
+  const x3 = points[3].x, y3 = points[3].y;
+
+  const minX = Math.min(x0, x1, x2, x3);
+  const maxX = Math.max(x0, x1, x2, x3);
+  const minY = Math.min(y0, y1, y2, y3);
+  const maxY = Math.max(y0, y1, y2, y3);
+
+  if (minX === maxX || minY === maxY) return null; // degenerate
+
+  // Each of the 4 points must lie on one of the two x-edges and one of the two y-edges
+  for (const [px, py] of [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] as [number, number][]) {
+    if ((px !== minX && px !== maxX) || (py !== minY && py !== maxY)) return null;
+  }
+  return { x1: minX, y1: minY, x2: maxX, y2: maxY };
+};
+
 const flushElement = (cell: GDSCell, element: PartialElement | null) => {
   if (!element) return;
   const layer = element.layer ?? 0;
@@ -177,13 +209,26 @@ const flushElement = (cell: GDSCell, element: PartialElement | null) => {
   const points = element.xy ?? [];
 
   if ((element.kind === 'boundary' || element.kind === 'box') && points.length >= 3) {
-    const polygon: GDSPolygon = {
-      layer,
-      datatype,
-      points,
-      bbox: bboxFromPoints(points),
-    };
-    cell.polygons.push(polygon);
+    const rectCoords = tryClassifyRect(points);
+    if (rectCoords) {
+      const rect: GDSRect = {
+        layer,
+        datatype,
+        x1: rectCoords.x1,
+        y1: rectCoords.y1,
+        x2: rectCoords.x2,
+        y2: rectCoords.y2,
+      };
+      cell.rects.push(rect);
+    } else {
+      const polygon: GDSPolygon = {
+        layer,
+        datatype,
+        points,
+        bbox: bboxFromPoints(points),
+      };
+      cell.polygons.push(polygon);
+    }
   } else if (element.kind === 'path' && points.length >= 2) {
     const width = Math.abs(element.width ?? 0);
     const bbox = bboxFromPoints(points);
@@ -241,6 +286,7 @@ const computeCellBBoxes = (cells: GDSCell[], cellMap: Map<string, GDSCell>): num
     visiting.add(cell.name);
 
     const bbox = emptyBBox();
+    cell.rects.forEach((r) => expandBBox(bbox, r));
     cell.polygons.forEach((p) => expandBBox(bbox, p.bbox));
     cell.paths.forEach((p) => expandBBox(bbox, p.bbox));
     cell.references.forEach((ref) => {
@@ -312,7 +358,7 @@ export function parseGDS(buffer: ArrayBuffer): GDSData {
         dbUnitMeters = units[1] || dbUnitMeters;
       }
     } else if (recordType === RECORD.BGNSTR) {
-      currentCell = { name: '', polygons: [], paths: [], references: [] };
+      currentCell = { name: '', rects: [], polygons: [], paths: [], references: [] };
     } else if (recordType === RECORD.STRNAME && currentCell) {
       currentCell.name = str();
     } else if (recordType === RECORD.ENDSTR && currentCell) {
@@ -376,6 +422,7 @@ export function parseGDS(buffer: ArrayBuffer): GDSData {
   const maxHierarchyDepth = computeCellBBoxes(cells, cellMap);
   const topCellName = findTopCell(cells);
   const bbox = cellMap.get(topCellName)?.bbox ?? { x1: 0, y1: 0, x2: 1, y2: 1 };
+  const rectCount = cells.reduce((sum, cell) => sum + cell.rects.length, 0);
   const polygonCount = cells.reduce((sum, cell) => sum + cell.polygons.length, 0);
   const pathCount = cells.reduce((sum, cell) => sum + cell.paths.length, 0);
   const referenceCount = cells.reduce((sum, cell) => sum + cell.references.length, 0);
@@ -391,6 +438,7 @@ export function parseGDS(buffer: ArrayBuffer): GDSData {
     topCellName,
     bbox,
     stats: {
+      rectCount,
       polygonCount,
       pathCount,
       referenceCount,
@@ -410,6 +458,19 @@ export const flattenGDSCell = (
 
   const visit = (cell: GDSCell, transform: GDSTransform, depth: number) => {
     if (truncated || depth > 32) return;
+    for (const rect of cell.rects) {
+      if (polygons.length + paths.length >= maxShapes) {
+        truncated = true;
+        return;
+      }
+      const points = [
+        { x: rect.x1, y: rect.y1 },
+        { x: rect.x2, y: rect.y1 },
+        { x: rect.x2, y: rect.y2 },
+        { x: rect.x1, y: rect.y2 },
+      ].map((point) => transformPoint(point, transform));
+      polygons.push({ layer: rect.layer, datatype: rect.datatype, points, bbox: bboxFromPoints(points) });
+    }
     for (const polygon of cell.polygons) {
       if (polygons.length + paths.length >= maxShapes) {
         truncated = true;
