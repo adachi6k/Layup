@@ -139,6 +139,11 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     setPerf({ total: precomputedRef.current.length, visible, culled, drawMs: end-start });
   },[containerSize.width,containerSize.height,pan.x,pan.y,absScale,isPanning,dieArea.x1,dieArea.y1,dieWUm,dieHUm,dbuToUm,def.pins,getGridPath]);
 
+  // Stable ref to the latest draw function so the precompute effect can
+  // schedule a redraw without adding draw (and all its deps) to its own dep array.
+  const drawRef = useRef(draw);
+  useEffect(()=>{ drawRef.current = draw; });
+
   // マクロ解決をメモ化 (描画毎に Map を構築しない)
   const resolveMacroRef = useRef<((name:string)=>{w:number;h:number;raw:string}|undefined)>(undefined);
   useEffect(()=>{ const macroMap=new Map<string,{w:number;h:number;raw:string}>(); const macroMapLower=new Map<string,{w:number;h:number;raw:string}>(); const macroMapNoUnderscore=new Map<string,{w:number;h:number;raw:string}>(); if(lef){ for(const m of lef.macros){ macroMap.set(m.name,{w:m.size.width,h:m.size.height,raw:m.name}); macroMapLower.set(m.name.toLowerCase(),{w:m.size.width,h:m.size.height,raw:m.name}); macroMapNoUnderscore.set(m.name.replace(/_/g,'').toLowerCase(),{w:m.size.width,h:m.size.height,raw:m.name}); } } const resolve=(name:string)=>{ const original=name; const trimmed=name.replace(/;$/,''); return macroMap.get(trimmed)||macroMap.get(original)||macroMapLower.get(trimmed.toLowerCase())||macroMapLower.get(original.toLowerCase())||macroMapNoUnderscore.get(trimmed.replace(/_/g,'').toLowerCase())||undefined; }; resolveMacroRef.current=resolve; const colorMap:Record<string,string>={ N:'rgba(0,123,255,0.85)', S:'rgba(0,92,191,0.85)', E:'rgba(40,167,69,0.85)', W:'rgba(32,140,58,0.85)', FN:'rgba(255,193,7,0.85)', FS:'rgba(255,159,64,0.85)', FE:'rgba(111,66,193,0.85)', FW:'rgba(102,16,242,0.85)' }; const pre=[] as {x:number;y:number;w:number;h:number;color:string;marker:boolean;orient:string}[]; const PLACEHOLDER=2; let unresolved=0; for(const c of def.components){ if(!c.placed) continue; const dim=resolve(c.macro); if(!dim) unresolved++; const orient=normalizeOrient(c.orient||'N'); let w=dim?dim.w:PLACEHOLDER; let h=dim?dim.h:PLACEHOLDER; const swapped=/^(E|W|FE|FW)$/.test(orient); if(dim && swapped){ w=dim.h; h=dim.w; } pre.push({ x:dbuToUm(c.x), y:dbuToUm(c.y), w, h, color: colorMap[orient]||'rgba(0,123,255,0.85)', marker: w>0.4 && h>0.4, orient }); } precomputedRef.current=pre; setUnresolvedCount(unresolved); // grid build
@@ -149,7 +154,11 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     const temp: number[][] = Array.from({length: cols*rows}, ()=>[]);
     pre.forEach((p,idx)=>{ const gx=Math.min(cols-1,Math.max(0,Math.floor((p.x-originX)/cellSize))); const gy=Math.min(rows-1,Math.max(0,Math.floor((p.y-originY)/cellSize))); temp[gy*cols+gx].push(idx); });
     const cells = temp.map(a=>new Uint32Array(a));
-    gridRef.current = { cellSize, cols, rows, cells, originX, originY }; },[lef,def.components,dbuToUm,dieArea.x1,dieArea.y1,dieWUm,dieHUm]);
+    gridRef.current = { cellSize, cols, rows, cells, originX, originY };
+    // Schedule a redraw so the canvas reflects the new LEF data immediately
+    // without waiting for the next pan/zoom/resize interaction.
+    requestAnimationFrame(()=>{ drawRef.current(); });
+  },[lef,def.components,dbuToUm,dieArea.x1,dieArea.y1,dieWUm,dieHUm]);
 
   // rAF draw throttling
   const drawRequestedRef = useRef(false);
@@ -164,6 +173,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     const factor = up ? factorBase : 1 / factorBase;
     setZoom(prev=>{ const nz=Math.min(120,Math.max(0.02,prev*factor)); if(nz===prev) return prev; const rect=containerRef.current?.getBoundingClientRect(); if(rect){ const cx=(e.clientX-rect.left-pan.x)/(baseScale*prev); const cy=(e.clientY-rect.top-pan.y)/(baseScale*prev); setPan({ x:e.clientX-rect.left-cx*baseScale*nz, y:e.clientY-rect.top-cy*baseScale*nz }); } return nz; }); };
   const onMouseDown=(e:React.MouseEvent)=>{
+    if(e.button!==0 && e.button!==1) return;
     if(pendingFitRafRef.current!=null){ cancelAnimationFrame(pendingFitRafRef.current); pendingFitRafRef.current=null; }
     userInteractedRef.current = true;
     startPan(e);

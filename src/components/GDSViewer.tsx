@@ -374,10 +374,12 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 onDoubleClick={fit}
               >
                 <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0 }} />
-                <div className="position-absolute bottom-0 start-0 m-2 small bg-light border rounded px-2 py-1">
-                  {import.meta.env.DEV && <>visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms</>}
-                  {cursor && <>{import.meta.env.DEV && ' / '}x {cursor.x.toFixed(2)} um, y {cursor.y.toFixed(2)} um</>}
-                </div>
+                {(import.meta.env.DEV || cursor) && (
+                  <div className="position-absolute bottom-0 start-0 m-2 small bg-light border rounded px-2 py-1">
+                    {import.meta.env.DEV && <>visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms</>}
+                    {cursor && <>{import.meta.env.DEV && ' / '}x {cursor.x.toFixed(2)} um, y {cursor.y.toFixed(2)} um</>}
+                  </div>
+                )}
               </div>
             </Card.Body>
           </Card>
