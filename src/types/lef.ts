@@ -119,13 +119,13 @@ export const getLayerColor = (layerName: string): string => {
   if (m) {
     const n = parseInt(m[1], 10);
     if (n >= 1 && n <= 8) return LAYER_COLORS[key] || LAYER_COLORS.default;
-    // 周期色 (8色) + 番号に応じた明度微調整で差別化
-    const baseHues = [45, 95, 320, 205, 50, 25, 265, 185]; // 既存配色に近いヒュー
+    // 周期色: M1-M8の新配色に合わせたビビッドな色相を循環使用
+    const baseHues = [204, 0, 120, 51, 313, 169, 33, 276]; // M1..M8の色相に対応
     const idx = (n - 1) % baseHues.length;
     const tier = Math.floor((n - 1) / baseHues.length); // 0,1,2...
     const h = baseHues[idx];
-    const s = 62;
-    const l = Math.max(35, Math.min(70, 55 + (tier % 3 - 1) * 8)); // 47/55/63 付近
+    const s = 90; // ビビッドな彩度
+    const l = Math.max(40, Math.min(65, 55 + (tier % 3 - 1) * 8)); // 47/55/63 付近
     return hslToHex(h, s, l);
   }
 
@@ -137,10 +137,10 @@ export const getLayerColor = (layerName: string): string => {
     return hslToHex(0, 0, l);
   }
 
-  // その他は安定ハッシュ
+  // その他は安定ハッシュ (ビビッドな彩度を維持)
   const h = hash32(key);
   const hue = h % 360;
-  const sat = 58 + (h >>> 10) % 12; // 58-69
+  const sat = 80 + (h >>> 10) % 15; // 80-94 (vivid)
   const lig = 48 + (h >>> 20) % 12; // 48-59
   return hslToHex(hue, sat, lig);
 };

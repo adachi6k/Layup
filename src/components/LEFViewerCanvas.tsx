@@ -32,10 +32,50 @@ const FILL_PATTERNS: readonly FillPatternType[] = [
   'Grid', 'Dots Sparse', 'Dots Dense', '50% Dither',
 ];
 
+// ── CanvasPattern tile cache for expensive (area-proportional) patterns ─────
+// Keyed by `${color}::${patternType}::${dpr}` so tiles are shared across rects
+// and only re-built when the color, pattern type, or device pixel ratio changes.
+const _patternTileCache = new Map<string, HTMLCanvasElement | null>();
+
+function makePatternTile(patternType: 'Dots Sparse' | 'Dots Dense' | '50% Dither', color: string, dpr: number): HTMLCanvasElement | null {
+  const key = `${color}::${patternType}::${dpr}`;
+  if (_patternTileCache.has(key)) return _patternTileCache.get(key)!;
+  const tile = document.createElement('canvas');
+  const tc = tile.getContext('2d');
+  if (!tc) { _patternTileCache.set(key, null); return null; }
+  if (patternType === 'Dots Dense') {
+    const sp = Math.round(DOT_SPACING_DENSE_PX * dpr);
+    tile.width = sp; tile.height = sp;
+    tc.fillStyle = color;
+    tc.beginPath();
+    tc.arc(sp / 2, sp / 2, DOT_RADIUS_DENSE_PX * dpr, 0, Math.PI * 2);
+    tc.fill();
+  } else if (patternType === 'Dots Sparse') {
+    const sp = Math.round(DOT_SPACING_SPARSE_PX * dpr);
+    tile.width = sp; tile.height = sp;
+    tc.fillStyle = color;
+    tc.beginPath();
+    tc.arc(sp / 2, sp / 2, DOT_RADIUS_SPARSE_PX * dpr, 0, Math.PI * 2);
+    tc.fill();
+  } else { // '50% Dither'
+    const cs = Math.round(DITHER_CELL_SIZE_PX * dpr);
+    tile.width = cs * 2; tile.height = cs * 2;
+    tc.fillStyle = color;
+    tc.fillRect(0, 0, cs, cs);
+    tc.fillRect(cs, cs, cs, cs);
+  }
+  _patternTileCache.set(key, tile);
+  return tile;
+}
+
 /**
  * Draw a hatching/fill pattern for a rectangle in world (LEF) coordinates.
  * All sizes are expressed in world units; absScale converts to CSS pixels.
  * The caller is responsible for having the Y-flip transform active.
+ *
+ * Dot and dither patterns use a GPU-tiled CanvasPattern (created once per
+ * color and cached) to avoid per-rectangle JS loops proportional to on-screen
+ * area. Line-based patterns iterate over lines only, which is O(side-length).
  */
 function drawHatch(
   ctx: CanvasRenderingContext2D,
@@ -44,6 +84,7 @@ function drawHatch(
   patternType: FillPatternType,
   absScale: number,
   alpha: number,
+  dpr: number,
 ): void {
   if (patternType === 'None') return;
 
@@ -109,32 +150,20 @@ function drawHatch(
       }
       ctx.stroke();
     }
-    if (patternType === 'Dots Sparse' || patternType === 'Dots Dense') {
-      const dotSp = (patternType === 'Dots Dense' ? DOT_SPACING_DENSE_PX : DOT_SPACING_SPARSE_PX) / absScale;
-      const dotR  = (patternType === 'Dots Dense' ? DOT_RADIUS_DENSE_PX  : DOT_RADIUS_SPARSE_PX)  / absScale;
-      const xi0 = Math.floor(x / dotSp); const xi1 = Math.ceil((x + w) / dotSp);
-      const yi0 = Math.floor(y / dotSp); const yi1 = Math.ceil((y + h) / dotSp);
-      ctx.beginPath();
-      for (let iy = yi0; iy <= yi1; iy++) {
-        for (let ix = xi0; ix <= xi1; ix++) {
-          const cx = (ix + 0.5) * dotSp; const cy = (iy + 0.5) * dotSp;
-          ctx.moveTo(cx + dotR, cy);
-          ctx.arc(cx, cy, dotR, 0, Math.PI * 2);
+    if (patternType === 'Dots Sparse' || patternType === 'Dots Dense' || patternType === '50% Dither') {
+      // Use a pre-built CanvasPattern tile so the browser's GPU handles tiling
+      // instead of a JS loop proportional to on-screen area.
+      const tile = makePatternTile(patternType, color, dpr);
+      if (tile) {
+        const pat = ctx.createPattern(tile, 'repeat');
+        if (pat) {
+          // setTransform with the inverse of the current CTM makes the pattern
+          // tile in device-pixel space (constant screen size at all zoom levels).
+          pat.setTransform(ctx.getTransform().inverse());
+          ctx.fillStyle = pat;
+          ctx.fillRect(x, y, w, h);
         }
       }
-      ctx.fill();
-    }
-    if (patternType === '50% Dither') {
-      const cs = DITHER_CELL_SIZE_PX / absScale;
-      const xi0 = Math.floor(x / cs); const xi1 = Math.ceil((x + w) / cs);
-      const yi0 = Math.floor(y / cs); const yi1 = Math.ceil((y + h) / cs);
-      ctx.beginPath();
-      for (let iy = yi0; iy <= yi1; iy++) {
-        for (let ix = xi0; ix <= xi1; ix++) {
-          if ((ix + iy) % 2 === 0) { ctx.rect(ix * cs, iy * cs, cs, cs); }
-        }
-      }
-      ctx.fill();
     }
   }
 
@@ -262,8 +291,9 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
       const w=r.x2-r.x1; const h=r.y2-r.y1;
       if(low && w*absScale<PIXEL_SKIP_THRESHOLD && h*absScale<PIXEL_SKIP_THRESHOLD){ culledCount++; continue; }
       const color=getLayerColor(r.layer);
-      drawHatch(ctx, r.x1, r.y1, w, h, color, fillPattern, absScale, low?0.55:0.8);
-      if(fillPattern !== 'None'){ ctx.lineWidth=baseStroke/absScale; ctx.strokeStyle=rectStroke; ctx.strokeRect(r.x1,r.y1,w,h); }
+      drawHatch(ctx, r.x1, r.y1, w, h, color, fillPattern, absScale, low?0.55:0.8, dpr);
+      // Always draw the outline so rect boundaries are visible even with 'None' fill
+      ctx.lineWidth=baseStroke/absScale; ctx.strokeStyle=rectStroke; ctx.strokeRect(r.x1,r.y1,w,h);
     }
     ctx.lineWidth=(Math.max(macroW,macroH)/1500)/absScale; ctx.setLineDash([ (Math.max(macroW,macroH)/600), (Math.max(macroW,macroH)/600) ]); ctx.strokeStyle=darkBg?'#cccccc':'#000000'; ctx.strokeRect(0,0,macroW,macroH); ctx.setLineDash([]);
 
@@ -399,6 +429,8 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
               className={`btn btn-sm ${darkBg ? 'btn-secondary' : 'btn-outline-secondary'}`}
               onClick={() => setDarkBg(b => !b)}
               title="Toggle dark background"
+              aria-label={darkBg ? 'Switch to light background' : 'Switch to dark background'}
+              aria-pressed={darkBg}
             >{darkBg ? '☀' : '🌙'}</button>
             <Form.Select
               size="sm"
@@ -406,6 +438,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
               value={fillPattern}
               onChange={e => setFillPattern(e.target.value as FillPatternType)}
               title="Fill pattern"
+              aria-label="Fill pattern"
             >
               {FILL_PATTERNS.map(p => <option key={p} value={p}>{p}</option>)}
             </Form.Select>
