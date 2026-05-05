@@ -16,6 +16,16 @@ type FillPatternType =
   | 'Diagonal /' | 'Diagonal \\' | 'Cross' | 'Diagonal Cross'
   | 'Grid' | 'Dots Sparse' | 'Dots Dense' | '50% Dither';
 
+// Pattern drawing constants (all sizes in CSS pixels, converted to world units via absScale)
+const PATTERN_BACKGROUND_ALPHA = 0.2;  // faint tint behind hatch lines
+const PATTERN_SPACING_PX = 8;          // perpendicular distance between hatch lines
+const PATTERN_LINE_WIDTH_PX = 1.2;     // hatch line stroke width
+const DOT_SPACING_DENSE_PX = 6;        // dot grid pitch – dense
+const DOT_SPACING_SPARSE_PX = 12;      // dot grid pitch – sparse
+const DOT_RADIUS_DENSE_PX = 1.5;       // dot radius – dense
+const DOT_RADIUS_SPARSE_PX = 2;        // dot radius – sparse
+const DITHER_CELL_SIZE_PX = 3;         // checkerboard cell size for 50% dither
+
 const FILL_PATTERNS: readonly FillPatternType[] = [
   'None', 'Solid', 'Horizontal', 'Vertical',
   'Diagonal /', 'Diagonal \\', 'Cross', 'Diagonal Cross',
@@ -49,13 +59,13 @@ function drawHatch(
     ctx.fillRect(x, y, w, h);
   } else {
     // Faint background tint so layer regions are visible even without lines
-    ctx.globalAlpha = alpha * 0.2;
+    ctx.globalAlpha = alpha * PATTERN_BACKGROUND_ALPHA;
     ctx.fillRect(x, y, w, h);
     ctx.globalAlpha = alpha;
 
     // Spacing & line width in world units so they appear constant in CSS pixels
-    const sp = 8 / absScale;
-    const lw = 1.2 / absScale;
+    const sp = PATTERN_SPACING_PX / absScale;
+    const lw = PATTERN_LINE_WIDTH_PX / absScale;
     ctx.lineWidth = lw;
 
     if (patternType === 'Horizontal' || patternType === 'Cross') {
@@ -100,8 +110,8 @@ function drawHatch(
       ctx.stroke();
     }
     if (patternType === 'Dots Sparse' || patternType === 'Dots Dense') {
-      const dotSp = patternType === 'Dots Dense' ? 6 / absScale : 12 / absScale;
-      const dotR  = patternType === 'Dots Dense' ? 1.5 / absScale : 2 / absScale;
+      const dotSp = (patternType === 'Dots Dense' ? DOT_SPACING_DENSE_PX : DOT_SPACING_SPARSE_PX) / absScale;
+      const dotR  = (patternType === 'Dots Dense' ? DOT_RADIUS_DENSE_PX  : DOT_RADIUS_SPARSE_PX)  / absScale;
       const xi0 = Math.floor(x / dotSp); const xi1 = Math.ceil((x + w) / dotSp);
       const yi0 = Math.floor(y / dotSp); const yi1 = Math.ceil((y + h) / dotSp);
       ctx.beginPath();
@@ -115,7 +125,7 @@ function drawHatch(
       ctx.fill();
     }
     if (patternType === '50% Dither') {
-      const cs = 3 / absScale;
+      const cs = DITHER_CELL_SIZE_PX / absScale;
       const xi0 = Math.floor(x / cs); const xi1 = Math.ceil((x + w) / cs);
       const yi0 = Math.floor(y / cs); const yi1 = Math.ceil((y + h) / cs);
       ctx.beginPath();
@@ -253,7 +263,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
       if(low && w*absScale<PIXEL_SKIP_THRESHOLD && h*absScale<PIXEL_SKIP_THRESHOLD){ culledCount++; continue; }
       const color=getLayerColor(r.layer);
       drawHatch(ctx, r.x1, r.y1, w, h, color, fillPattern, absScale, low?0.55:0.8);
-      ctx.lineWidth=baseStroke/absScale; ctx.strokeStyle=rectStroke; ctx.strokeRect(r.x1,r.y1,w,h);
+      if(fillPattern !== 'None'){ ctx.lineWidth=baseStroke/absScale; ctx.strokeStyle=rectStroke; ctx.strokeRect(r.x1,r.y1,w,h); }
     }
     ctx.lineWidth=(Math.max(macroW,macroH)/1500)/absScale; ctx.setLineDash([ (Math.max(macroW,macroH)/600), (Math.max(macroW,macroH)/600) ]); ctx.strokeStyle=darkBg?'#cccccc':'#000000'; ctx.strokeRect(0,0,macroW,macroH); ctx.setLineDash([]);
 
