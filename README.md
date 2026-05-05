@@ -1,6 +1,6 @@
-# Layup – Web-based LEF File Viewer
+# Layup - Web-based Layout File Viewer
 
-Layup is a lightweight, browser‑based viewer for LEF (Library Exchange Format) files.  
+Layup is a lightweight, browser-based viewer for LEF, DEF, and GDSII layout files.  
 It helps you quickly inspect MACRO geometry, pins, layers, and obstructions (OBS) for library / layout understanding and early verification—without installing heavy EDA tools.
 
 https://adachi6k.github.io/Layup/
@@ -12,6 +12,7 @@ https://adachi6k.github.io/Layup/
 ## Key Features
 
 - Drag & drop, file picker, or sample URL loading
+- LEF, DEF, and GDSII file loading
 - Layer visibility toggling (Metal / Via / PIN / OBS)
 - Zoom & pan (mouse & touch)
 - Macro switching with size / origin display
@@ -39,7 +40,7 @@ Open an issue if you need unsupported constructs.
 
 ## Usage Workflow
 
-1. Provide a `.lef` file (drag & drop, choose file, or load a sample).
+1. Provide a `.lef`, `.def`, `.gds`, or `.gdsii` file (drag & drop, choose file, or load a sample).
 2. Use the left panel to:
    - View file summary
    - Toggle layer visibility
@@ -90,20 +91,23 @@ Build artifacts are emitted to `dist/` and can be hosted on any static hosting (
 |------|---------|
 | `src/types/lef.ts` | TypeScript interfaces for LEF entities |
 | `src/utils/lefParser.ts` | Text → normalized in‑memory model |
+| `src/types/gds.ts` | TypeScript interfaces for GDSII entities |
+| `src/utils/gdsParser.ts` | Binary GDSII → normalized in-memory model |
 | `src/components/FileDropZone.tsx` | File / URL ingestion UI |
 | `src/components/LEFViewer.tsx` | Main layered SVG visualization |
+| `src/components/GDSViewer.tsx` | GDSII canvas visualization |
 | `src/components/...` | Layer toggles, pin list, macro controls |
 
 ### Data Flow
 
 ```
-Raw LEF text
+Raw LEF / DEF text or GDSII binary data
     ↓ (tokenization / parsing)
-Normalized LEF model (macros / pins / layers / rects)
+Normalized layout model (macros / pins / layers / rects / polygons / references)
     ↓
 React state
     ↓
-SVG rendering (grouped per layer -> geometry -> styled)
+SVG or Canvas rendering (grouped per layer -> geometry -> styled)
 ```
 
 ### Rendering Strategy
@@ -118,7 +122,7 @@ SVG rendering (grouped per layer -> geometry -> styled)
 ## Limitations / Known Gaps
 
 - Very large LEF files (tens of thousands of rects) may impact performance.
-- DEF / GDS and other layout formats are not yet supported.
+- GDS support focuses on BOUNDARY, PATH, SREF, and AREF geometry. Full text/property rendering is not yet supported.
 - VIA compound definitions simplified to rectangles.
 - Error handling for malformed LEF is basic.
 - No POLYGON support (currently RECT only).
@@ -220,7 +224,7 @@ MIT License – see [LICENSE](LICENSE) for details.
 
 ## Short Summary (TL;DR)
 
-Layup is an in-browser LEF viewer: drop a file, toggle layers, inspect pins and geometry, and explore macros without backend dependencies. Roadmap includes DEF support, exports, performance tuning, and a WebGL backend.
+Layup is an in-browser layout viewer: drop a file, toggle layers, inspect pins and geometry, and explore layouts without backend dependencies. Roadmap includes richer DEF/GDS support, exports, performance tuning, and a WebGL backend.
 
 ---
 

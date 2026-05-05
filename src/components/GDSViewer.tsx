@@ -1,0 +1,422 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type React from 'react';
+import { Badge, Button, Card, Col, Form, ListGroup, Row } from 'react-bootstrap';
+import type { GDSBBox, GDSCell, GDSData, GDSPath, GDSPolygon } from '../types/gds';
+import { flattenGDSCell, transformBBox } from '../utils/gdsParser';
+
+interface GDSViewerProps {
+  gdsData: GDSData;
+  filename: string;
+}
+
+type DrawItem =
+  | { kind: 'polygon'; layer: number; datatype: number; points: { x: number; y: number }[]; bbox: GDSBBox }
+  | { kind: 'path'; layer: number; datatype: number; width: number; points: { x: number; y: number }[]; bbox: GDSBBox };
+
+interface RefBox {
+  name: string;
+  bbox: GDSBBox;
+}
+
+const MAX_FLATTENED_SHAPES = 250_000;
+const MAX_REFERENCE_BOXES = 75_000;
+
+const layerColor = (layer: number): string => {
+  const hues = [45, 95, 320, 205, 50, 25, 265, 185, 0, 150, 285, 15];
+  const hue = hues[Math.abs(layer) % hues.length];
+  const light = 48 + ((Math.abs(layer) * 7) % 18);
+  return `hsl(${hue} 64% ${light}%)`;
+};
+
+const bboxWidth = (bbox: GDSBBox) => Math.max(1e-9, bbox.x2 - bbox.x1);
+const bboxHeight = (bbox: GDSBBox) => Math.max(1e-9, bbox.y2 - bbox.y1);
+
+const intersects = (a: GDSBBox, b: GDSBBox): boolean =>
+  a.x2 >= b.x1 && a.x1 <= b.x2 && a.y2 >= b.y1 && a.y1 <= b.y2;
+
+const renderPolygon = (ctx: CanvasRenderingContext2D, polygon: GDSPolygon | Extract<DrawItem, { kind: 'polygon' }>) => {
+  if (polygon.points.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(polygon.points[0].x, polygon.points[0].y);
+  for (let i = 1; i < polygon.points.length; i += 1) ctx.lineTo(polygon.points[i].x, polygon.points[i].y);
+  ctx.closePath();
+  ctx.fill();
+};
+
+const renderPath = (ctx: CanvasRenderingContext2D, path: GDSPath | Extract<DrawItem, { kind: 'path' }>, absScale: number) => {
+  if (path.points.length < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(path.points[0].x, path.points[0].y);
+  for (let i = 1; i < path.points.length; i += 1) ctx.lineTo(path.points[i].x, path.points[i].y);
+  ctx.lineWidth = Math.max(path.width, 1 / absScale);
+  ctx.stroke();
+};
+
+const collectReferenceBoxes = (cell: GDSCell, data: GDSData): { boxes: RefBox[]; truncated: boolean } => {
+  const boxes: RefBox[] = [];
+  let truncated = false;
+  for (const ref of cell.references) {
+    const target = data.cellMap.get(ref.name);
+    if (!target?.bbox) continue;
+    const columns = ref.columns ?? 1;
+    const rows = ref.rows ?? 1;
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < columns; col += 1) {
+        if (boxes.length >= MAX_REFERENCE_BOXES) {
+          truncated = true;
+          return { boxes, truncated };
+        }
+        const dx = (ref.columnVector?.x ?? 0) * col + (ref.rowVector?.x ?? 0) * row;
+        const dy = (ref.columnVector?.y ?? 0) * col + (ref.rowVector?.y ?? 0) * row;
+        boxes.push({
+          name: ref.name,
+          bbox: transformBBox(target.bbox, { ...ref.transform, x: ref.transform.x + dx, y: ref.transform.y + dy }),
+        });
+      }
+    }
+  }
+  return { boxes, truncated };
+};
+
+export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const panStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const [selectedCellName, setSelectedCellName] = useState(gdsData.topCellName);
+  const [visibleLayers, setVisibleLayers] = useState<Set<number>>(new Set());
+  const [showRefs, setShowRefs] = useState(true);
+  const [flattenRefs, setFlattenRefs] = useState(false);
+  const [containerSize, setContainerSize] = useState({ width: 100, height: 100 });
+  const [baseScale, setBaseScale] = useState(1);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false });
+
+  const selectedCell = gdsData.cellMap.get(selectedCellName) ?? gdsData.cellMap.get(gdsData.topCellName) ?? gdsData.cells[0];
+  const selectedBBox = selectedCell?.bbox ?? gdsData.bbox;
+  const absScale = baseScale * zoom;
+
+  const allLayers = useMemo(() => {
+    const layers = new Set<number>();
+    gdsData.cells.forEach((cell) => {
+      cell.polygons.forEach((polygon) => layers.add(polygon.layer));
+      cell.paths.forEach((path) => layers.add(path.layer));
+    });
+    return Array.from(layers).sort((a, b) => a - b);
+  }, [gdsData]);
+
+  useEffect(() => {
+    setVisibleLayers(new Set(allLayers));
+  }, [allLayers]);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const el = containerRef.current;
+    const update = () => {
+      const rect = el.getBoundingClientRect();
+      setContainerSize({ width: rect.width, height: rect.height });
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const fit = useCallback(() => {
+    const pad = 0.06;
+    const scale = Math.min(
+      (containerSize.width * (1 - pad * 2)) / bboxWidth(selectedBBox),
+      (containerSize.height * (1 - pad * 2)) / bboxHeight(selectedBBox),
+    );
+    const safeScale = Number.isFinite(scale) && scale > 0 ? scale : 1;
+    setBaseScale(safeScale);
+    setZoom(1);
+    setPan({
+      x: (containerSize.width - bboxWidth(selectedBBox) * safeScale) / 2,
+      y: (containerSize.height - bboxHeight(selectedBBox) * safeScale) / 2,
+    });
+  }, [containerSize.height, containerSize.width, selectedBBox]);
+
+  useEffect(() => {
+    fit();
+  }, [fit, selectedCellName]);
+
+  const flattened = useMemo(() => {
+    if (!flattenRefs || !selectedCell) return null;
+    return flattenGDSCell(gdsData, selectedCell.name, MAX_FLATTENED_SHAPES);
+  }, [flattenRefs, gdsData, selectedCell]);
+
+  const drawItems = useMemo<DrawItem[]>(() => {
+    if (!selectedCell) return [];
+    const polygons = (flattened?.polygons ?? selectedCell.polygons).map((polygon) => ({
+      kind: 'polygon' as const,
+      layer: polygon.layer,
+      datatype: polygon.datatype,
+      points: polygon.points,
+      bbox: polygon.bbox,
+    }));
+    const paths = (flattened?.paths ?? selectedCell.paths).map((path) => ({
+      kind: 'path' as const,
+      layer: path.layer,
+      datatype: path.datatype,
+      width: path.width,
+      points: path.points,
+      bbox: path.bbox,
+    }));
+    return [...polygons, ...paths];
+  }, [flattened, selectedCell]);
+
+  const refBoxResult = useMemo(() => (selectedCell ? collectReferenceBoxes(selectedCell, gdsData) : { boxes: [], truncated: false }), [gdsData, selectedCell]);
+  const refBoxes = refBoxResult.boxes;
+
+  const screenToWorld = useCallback((sx: number, sy: number) => ({
+    x: selectedBBox.x1 + (sx - pan.x) / absScale,
+    y: selectedBBox.y2 - (sy - pan.y) / absScale,
+  }), [absScale, pan.x, pan.y, selectedBBox.x1, selectedBBox.y2]);
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = containerSize.width;
+    const cssH = containerSize.height;
+    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+      canvas.width = Math.round(cssW * dpr);
+      canvas.height = Math.round(cssH * dpr);
+      canvas.style.width = `${cssW}px`;
+      canvas.style.height = `${cssH}px`;
+    }
+
+    const start = performance.now();
+    ctx.save();
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    const visibleBBox: GDSBBox = {
+      x1: selectedBBox.x1 - pan.x / absScale,
+      x2: selectedBBox.x1 + (cssW - pan.x) / absScale,
+      y1: selectedBBox.y2 - (cssH - pan.y) / absScale,
+      y2: selectedBBox.y2 + pan.y / absScale,
+    };
+
+    ctx.translate(pan.x, pan.y);
+    ctx.scale(absScale, absScale);
+    ctx.translate(-selectedBBox.x1, selectedBBox.y2);
+    ctx.scale(1, -1);
+
+    ctx.save();
+    ctx.lineWidth = 1 / absScale;
+    ctx.strokeStyle = '#222';
+    ctx.setLineDash([8 / absScale, 6 / absScale]);
+    ctx.strokeRect(selectedBBox.x1, selectedBBox.y1, bboxWidth(selectedBBox), bboxHeight(selectedBBox));
+    ctx.setLineDash([]);
+    ctx.restore();
+
+    let visible = 0;
+    let culled = 0;
+    let refsVisible = 0;
+    drawItems.forEach((item) => {
+      if (!visibleLayers.has(item.layer)) return;
+      if (!intersects(item.bbox, visibleBBox)) {
+        culled += 1;
+        return;
+      }
+      visible += 1;
+      const color = layerColor(item.layer);
+      if (item.kind === 'polygon') {
+        ctx.globalAlpha = 0.68;
+        ctx.fillStyle = color;
+        renderPolygon(ctx, item);
+      } else {
+        ctx.globalAlpha = 0.8;
+        ctx.strokeStyle = color;
+        renderPath(ctx, item, absScale);
+      }
+    });
+    ctx.globalAlpha = 1;
+
+    if (showRefs && !flattenRefs) {
+      ctx.save();
+      ctx.lineWidth = 1 / absScale;
+      ctx.strokeStyle = 'rgba(30,30,30,0.35)';
+      refBoxes.forEach((ref) => {
+        if (!intersects(ref.bbox, visibleBBox)) return;
+        refsVisible += 1;
+        ctx.strokeRect(ref.bbox.x1, ref.bbox.y1, bboxWidth(ref.bbox), bboxHeight(ref.bbox));
+      });
+      ctx.restore();
+    }
+
+    ctx.restore();
+    setRenderStats({
+      visible,
+      culled,
+      refsVisible,
+      drawMs: performance.now() - start,
+      truncated: Boolean(flattened?.truncated),
+      refsTruncated: refBoxResult.truncated,
+    });
+  }, [absScale, containerSize.height, containerSize.width, drawItems, flattened?.truncated, flattenRefs, pan.x, pan.y, refBoxResult.truncated, refBoxes, selectedBBox, showRefs, visibleLayers]);
+
+  useEffect(() => {
+    draw();
+  }, [draw]);
+
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+    const rect = containerRef.current?.getBoundingClientRect();
+    const sx = e.clientX - (rect?.left ?? 0);
+    const sy = e.clientY - (rect?.top ?? 0);
+    const before = screenToWorld(sx, sy);
+    setZoom((prev) => {
+      const next = Math.min(200, Math.max(0.02, prev * factor));
+      const nextScale = baseScale * next;
+      setPan({
+        x: sx - (before.x - selectedBBox.x1) * nextScale,
+        y: sy - (selectedBBox.y2 - before.y) * nextScale,
+      });
+      return next;
+    });
+  };
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0 && e.button !== 1) return;
+    panStartRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
+    setIsPanning(true);
+  };
+
+  const onMouseMove = (e: React.MouseEvent) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (rect) setCursor(screenToWorld(e.clientX - rect.left, e.clientY - rect.top));
+    if (!isPanning || !panStartRef.current) return;
+    setPan({
+      x: panStartRef.current.panX + e.clientX - panStartRef.current.x,
+      y: panStartRef.current.panY + e.clientY - panStartRef.current.y,
+    });
+  };
+
+  const endPan = () => {
+    panStartRef.current = null;
+    setIsPanning(false);
+  };
+
+  const toggleLayer = (layer: number) => {
+    setVisibleLayers((prev) => {
+      const next = new Set(prev);
+      if (next.has(layer)) next.delete(layer);
+      else next.add(layer);
+      return next;
+    });
+  };
+
+  return (
+    <div className="h-100 d-flex flex-column p-2">
+      <Card className="mb-2">
+        <Card.Body className="py-2">
+          <div className="d-flex align-items-center gap-2 flex-wrap">
+            <strong>GDS Layout</strong>
+            <Badge bg="secondary">{filename}</Badge>
+            <Badge bg="light" text="dark">lib {gdsData.libraryName || '-'}</Badge>
+            <Badge bg="light" text="dark">{gdsData.cells.length} cells</Badge>
+            <Badge bg="light" text="dark">{gdsData.stats.referenceCount} refs</Badge>
+            <Badge bg="light" text="dark">{gdsData.stats.polygonCount} polygons</Badge>
+            <Badge bg="light" text="dark">scale {absScale.toFixed(3)} px/um</Badge>
+            <div className="ms-auto d-flex gap-1">
+              <Button size="sm" variant="outline-secondary" onClick={() => setZoom((z) => Math.min(200, z * 1.2))}>+</Button>
+              <Button size="sm" variant="outline-secondary" onClick={() => setZoom((z) => Math.max(0.02, z / 1.2))}>-</Button>
+              <Button size="sm" variant="outline-secondary" onClick={fit}>Reset</Button>
+            </div>
+          </div>
+        </Card.Body>
+      </Card>
+
+      <Row className="flex-grow-1 g-2" style={{ minHeight: 0 }}>
+        <Col md={3} lg={2} className="h-100">
+          <Card className="h-100">
+            <Card.Header className="py-2">Cells / Layers</Card.Header>
+            <Card.Body className="p-2 overflow-auto">
+              <Form.Label className="small">Top cell</Form.Label>
+              <Form.Select size="sm" value={selectedCellName} onChange={(e) => setSelectedCellName(e.target.value)}>
+                {gdsData.cells.map((cell) => (
+                  <option key={cell.name} value={cell.name}>{cell.name}</option>
+                ))}
+              </Form.Select>
+              <div className="small text-muted mt-2">
+                bbox {bboxWidth(selectedBBox).toFixed(2)} x {bboxHeight(selectedBBox).toFixed(2)} um
+              </div>
+              <Form.Check
+                className="mt-2"
+                type="switch"
+                id="gds-show-refs"
+                label="Show cell refs"
+                checked={showRefs}
+                onChange={(e) => setShowRefs(e.target.checked)}
+              />
+              <Form.Check
+                type="switch"
+                id="gds-flatten-refs"
+                label="Flatten refs"
+                checked={flattenRefs}
+                onChange={(e) => setFlattenRefs(e.target.checked)}
+              />
+              {renderStats.truncated && (
+                <div className="text-warning small mt-1">
+                  Flattened view truncated at {MAX_FLATTENED_SHAPES.toLocaleString()} shapes.
+                </div>
+              )}
+              {renderStats.refsTruncated && showRefs && !flattenRefs && (
+                <div className="text-warning small mt-1">
+                  Reference boxes truncated at {MAX_REFERENCE_BOXES.toLocaleString()} instances.
+                </div>
+              )}
+              <hr />
+              <div className="d-flex gap-1 mb-2">
+                <Button size="sm" variant="outline-secondary" onClick={() => setVisibleLayers(new Set(allLayers))}>All</Button>
+                <Button size="sm" variant="outline-secondary" onClick={() => setVisibleLayers(new Set())}>None</Button>
+              </div>
+              <ListGroup variant="flush" className="small">
+                {allLayers.map((layer) => (
+                  <ListGroup.Item key={layer} className="px-0 py-1 d-flex align-items-center gap-2">
+                    <Form.Check checked={visibleLayers.has(layer)} onChange={() => toggleLayer(layer)} />
+                    <span style={{ width: 14, height: 14, background: layerColor(layer), display: 'inline-block', border: '1px solid #777' }} />
+                    <span>L{layer}</span>
+                  </ListGroup.Item>
+                ))}
+              </ListGroup>
+            </Card.Body>
+          </Card>
+        </Col>
+        <Col md={9} lg={10} className="h-100">
+          <Card className="h-100">
+            <Card.Body className="p-0 position-relative">
+              <div
+                ref={containerRef}
+                className="w-100 h-100"
+                style={{ cursor: isPanning ? 'grabbing' : 'grab', overflow: 'hidden' }}
+                onWheel={handleWheel}
+                onMouseDown={onMouseDown}
+                onMouseMove={onMouseMove}
+                onMouseUp={endPan}
+                onMouseLeave={() => { endPan(); setCursor(null); }}
+                onDoubleClick={fit}
+              >
+                <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0 }} />
+                <div className="position-absolute bottom-0 start-0 m-2 small bg-light border rounded px-2 py-1">
+                  visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms
+                  {cursor && <> / x {cursor.x.toFixed(2)} um, y {cursor.y.toFixed(2)} um</>}
+                </div>
+              </div>
+            </Card.Body>
+          </Card>
+        </Col>
+      </Row>
+    </div>
+  );
+};
