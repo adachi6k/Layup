@@ -8,6 +8,7 @@ import type { LEFData } from '../types/lef';
 
 export const VIEW_MODES = ['split', 'lef', 'def', 'gds'] as const;
 
+/** ViewMode stays in sync with VIEW_MODES so validation and state typing share one source of truth. */
 export type ViewMode = typeof VIEW_MODES[number];
 
 const isViewMode = (value: string | null): value is ViewMode =>
