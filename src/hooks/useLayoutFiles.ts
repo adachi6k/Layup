@@ -6,10 +6,12 @@ import type { DEFData } from '../types/def';
 import type { GDSData } from '../types/gds';
 import type { LEFData } from '../types/lef';
 
-export type ViewMode = 'split' | 'lef' | 'def' | 'gds';
+const VIEW_MODES = ['split', 'lef', 'def', 'gds'] as const;
+
+export type ViewMode = typeof VIEW_MODES[number];
 
 const isViewMode = (value: string | null): value is ViewMode =>
-  value === 'lef' || value === 'def' || value === 'split' || value === 'gds';
+  VIEW_MODES.includes(value as ViewMode);
 
 export const useLayoutFiles = () => {
   const [lefData, setLefData] = useState<LEFData | null>(null);

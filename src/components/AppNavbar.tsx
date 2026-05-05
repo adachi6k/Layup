@@ -35,9 +35,9 @@ export const AppNavbar = ({
         <div className="d-flex align-items-center gap-3 ms-auto">
           {(lefLoaded || defLoaded || gdsLoaded) && (
             <div className="text-light small d-none d-md-block">
-              {lefLoaded && <span className="me-2"><i className="bi bi-file-earmark-code me-1"></i>{filename || 'LEF ?'}</span>}
-              {defLoaded && <span className="me-2"><i className="bi bi-diagram-3 me-1"></i>{defFilename || 'DEF ?'}</span>}
-              {gdsLoaded && <span><i className="bi bi-layers me-1"></i>{gdsFilename || 'GDS ?'}</span>}
+              {lefLoaded && <span className="me-2"><i className="bi bi-file-earmark-code me-1"></i>{filename || 'Untitled LEF'}</span>}
+              {defLoaded && <span className="me-2"><i className="bi bi-diagram-3 me-1"></i>{defFilename || 'Untitled DEF'}</span>}
+              {gdsLoaded && <span><i className="bi bi-layers me-1"></i>{gdsFilename || 'Untitled GDS'}</span>}
             </div>
           )}
           {loadedCount > 1 && (
