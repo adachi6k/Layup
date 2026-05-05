@@ -6,7 +6,7 @@ import type { DEFData } from '../types/def';
 import type { GDSData } from '../types/gds';
 import type { LEFData } from '../types/lef';
 
-const VIEW_MODES = ['split', 'lef', 'def', 'gds'] as const;
+export const VIEW_MODES = ['split', 'lef', 'def', 'gds'] as const;
 
 export type ViewMode = typeof VIEW_MODES[number];
 
