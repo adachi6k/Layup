@@ -5,6 +5,7 @@ interface FileDropZoneProps {
   onFileLoad: (content: string, filename: string) => void;
   onBinaryFileLoad?: (content: ArrayBuffer, filename: string) => void;
   onMultipleFilesLoad?: (files: Array<{ content: string | ArrayBuffer; filename: string }>) => void;
+  onMultipleUrlsLoad?: (urls: string[]) => void;
   onUrlLoad?: (url: string) => void;
 }
 
@@ -13,7 +14,7 @@ const ACCEPTED_EXTENSIONS = ['.lef', '.def', '.gds', '.gdsii'];
 const isAccepted = (name: string) => ACCEPTED_EXTENSIONS.some(ext => name.toLowerCase().endsWith(ext));
 const isGDS = (name: string) => name.toLowerCase().endsWith('.gds') || name.toLowerCase().endsWith('.gdsii');
 
-export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinaryFileLoad, onMultipleFilesLoad, onUrlLoad }) => {
+export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinaryFileLoad, onMultipleFilesLoad, onMultipleUrlsLoad, onUrlLoad }) => {
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,13 +101,16 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinary
     e.target.value = '';
   }, [readAllFiles]);
 
-  const loadSampleUrl = useCallback((path: string) => {
-    if (onUrlLoad) {
-      onUrlLoad(`${import.meta.env.BASE_URL}${path}`);
+  const handleSampleLefDef = useCallback(() => {
+    if (onMultipleUrlsLoad) {
+      onMultipleUrlsLoad([
+        `${import.meta.env.BASE_URL}samples/sample.lef`,
+        `${import.meta.env.BASE_URL}samples/sample.def`,
+      ]);
+    } else {
+      onUrlLoad?.(`${import.meta.env.BASE_URL}samples/sample.lef`);
     }
-  }, [onUrlLoad]);
-
-  return (
+  }, [onMultipleUrlsLoad, onUrlLoad]);  return (
     <Container className="mt-4">
       <Row className="justify-content-center">
         <Col md={8}>
@@ -147,7 +151,7 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinary
             </div>
           </div>
 
-          {onUrlLoad && (
+          {(onUrlLoad || onMultipleUrlsLoad) && (
             <div className="mt-3">
               <p className="text-muted small text-center mb-2">
                 <i className="bi bi-lightning-charge me-1"></i>Load a sample file to get started:
@@ -155,21 +159,14 @@ export const FileDropZone: React.FC<FileDropZoneProps> = ({ onFileLoad, onBinary
               <div className="d-flex justify-content-center gap-2 flex-wrap">
                 <button
                   className="btn btn-outline-primary btn-sm"
-                  onClick={() => loadSampleUrl('samples/sample.lef')}
-                >
-                  <i className="bi bi-file-earmark-code me-1"></i>
-                  Sample LEF
-                </button>
-                <button
-                  className="btn btn-outline-success btn-sm"
-                  onClick={() => loadSampleUrl('samples/sample.def')}
+                  onClick={handleSampleLefDef}
                 >
                   <i className="bi bi-diagram-3 me-1"></i>
-                  Sample DEF
+                  Sample LEF + DEF
                 </button>
                 <button
                   className="btn btn-outline-secondary btn-sm"
-                  onClick={() => loadSampleUrl('samples/lm_final.gds')}
+                  onClick={() => onUrlLoad?.(`${import.meta.env.BASE_URL}samples/lm_final.gds`)}
                 >
                   <i className="bi bi-layers me-1"></i>
                   Sample GDS

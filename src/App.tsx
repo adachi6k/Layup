@@ -24,6 +24,7 @@ function App() {
     handleBinaryFileLoad,
     handleFileLoad,
     handleMultipleFilesLoad,
+    handleMultipleUrlsLoad,
     handleUrlLoad,
   } = useLayoutFiles();
 
@@ -66,6 +67,7 @@ function App() {
             onFileLoad={handleFileLoad}
             onBinaryFileLoad={handleBinaryFileLoad}
             onMultipleFilesLoad={handleMultipleFilesLoad}
+            onMultipleUrlsLoad={handleMultipleUrlsLoad}
             onUrlLoad={handleUrlLoad}
           />
         )}
@@ -78,8 +80,8 @@ function App() {
         {lefData && !loading && !defData && !gdsData && (
           <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
         )}
-        {/* DEF only (no LEF loaded) */}
-        {defData && !lefData && !gdsData && !loading && (
+        {/* DEF only (no LEF loaded, not yet in 'def' viewMode — prevents double-render with the viewMode block below) */}
+        {defData && !lefData && !gdsData && !loading && viewMode !== 'def' && (
           <div className="h-100 d-flex flex-column">
             <div className="flex-grow-1" style={{minHeight:0}}>
               <DEFLayoutViewer def={defData} lef={null} />
@@ -109,7 +111,32 @@ function App() {
             <div className="flex-grow-1" style={{minHeight:0}}>
               <DEFLayoutViewer def={defData} lef={lefData} />
             </div>
-            <div className="viewer-label">DEF die + components</div>
+            {!lefData ? (
+              <div className="viewer-label">
+                DEF layout (macro sizes unresolved –{' '}
+                <label className="viewer-label-action">
+                  add a LEF file
+                  <input
+                    type="file"
+                    accept=".lef"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = (ev) => {
+                        const content = ev.target?.result as string;
+                        if (content) handleFileLoad(content, file.name);
+                      };
+                      reader.readAsText(file);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+                {' '}to resolve)
+              </div>
+            ) : (
+              <div className="viewer-label">DEF die + components</div>
+            )}
           </div>
         )}
       </div>

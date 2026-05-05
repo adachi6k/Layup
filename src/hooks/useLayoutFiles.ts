@@ -98,38 +98,55 @@ export const useLayoutFiles = () => {
 
   /**
    * Load multiple files at once (e.g. LEF + DEF dropped together).
-   * All files are parsed in one batch so the view mode is resolved correctly.
+   * All files are parsed before any state is committed so that a parse failure
+   * in a later file does not leave the app in a partial / inconsistent state.
    */
   const handleMultipleFilesLoad = useCallback(
     (files: Array<{ content: string | ArrayBuffer; filename: string }>) => {
       setLoading(true);
       setError(null);
-      let hasLef = false;
-      let hasDef = false;
-      let hasGds = false;
       try {
+        // Parse every file first; state is only written after all succeed.
+        let newLef: LEFData | null = null;
+        let newLefName = '';
+        let newDef: DEFData | null = null;
+        let newDefName = '';
+        let newGds: GDSData | null = null;
+        let newGdsName = '';
+
         for (const { content, filename: fileName } of files) {
           const lower = fileName.toLowerCase();
           if (lower.endsWith('.lef')) {
-            const parser = new LEFParser();
-            const parsed = parser.parse(content as string);
-            setLefData(parsed);
-            setFilename(fileName);
-            hasLef = true;
+            newLef = new LEFParser().parse(content as string);
+            newLefName = fileName;
           } else if (lower.endsWith('.def')) {
-            const parsed = parseDEF(content as string);
-            setDefData(parsed);
-            setDefFilename(fileName);
-            hasDef = true;
+            newDef = parseDEF(content as string);
+            newDefName = fileName;
           } else if (lower.endsWith('.gds') || lower.endsWith('.gdsii')) {
-            const parsed = parseGDS(content as ArrayBuffer);
-            setGdsData(parsed);
-            setGdsFilename(fileName);
-            hasGds = true;
+            newGds = parseGDS(content as ArrayBuffer);
+            newGdsName = fileName;
           }
         }
+
+        // All parses succeeded — commit the new values atomically.
+        if (newLef !== null) {
+          setLefData(newLef);
+          setFilename(newLefName);
+        }
+        if (newDef !== null) {
+          setDefData(newDef);
+          setDefFilename(newDefName);
+        }
+        if (newGds !== null) {
+          setGdsData(newGds);
+          setGdsFilename(newGdsName);
+        }
+
         // Determine the most useful view mode after batch load.
         // GDS cannot be combined with LEF/DEF in the same view, so LEF+DEF takes priority.
+        const hasLef = newLef !== null;
+        const hasDef = newDef !== null;
+        const hasGds = newGds !== null;
         if (hasLef && hasDef) setViewMode('split');
         else if (hasGds && !hasLef && !hasDef) setViewMode('gds');
         else if (hasLef) setViewMode('lef');
@@ -142,6 +159,33 @@ export const useLayoutFiles = () => {
     },
     [],
   );
+
+  /**
+   * Fetch multiple remote URLs in parallel and load them as a batch.
+   * Useful for loading a matched LEF + DEF sample pair in a single action.
+   */
+  const handleMultipleUrlsLoad = useCallback(async (urls: string[]) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const results = await Promise.all(
+        urls.map(async (url) => {
+          const response = await fetch(url);
+          if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          const fileName = url.split('/').pop() || 'remote-file';
+          const lower = fileName.toLowerCase();
+          if (lower.endsWith('.gds') || lower.endsWith('.gdsii')) {
+            return { content: await response.arrayBuffer(), filename: fileName };
+          }
+          return { content: await response.text(), filename: fileName };
+        }),
+      );
+      handleMultipleFilesLoad(results);
+    } catch (err) {
+      setError(`Failed to load files: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      setLoading(false);
+    }
+  }, [handleMultipleFilesLoad]);
 
   const handleUrlLoad = useCallback(async (url: string) => {
     setLoading(true);
@@ -181,6 +225,7 @@ export const useLayoutFiles = () => {
     handleBinaryFileLoad,
     handleFileLoad,
     handleMultipleFilesLoad,
+    handleMultipleUrlsLoad,
     handleUrlLoad,
   };
 };

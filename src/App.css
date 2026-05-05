@@ -45,6 +45,17 @@
   color: #555;
 }
 
+/* Inline action link inside a viewer label (e.g. "add a LEF file") */
+.viewer-label-action {
+  cursor: pointer;
+  color: #0d6efd;
+  text-decoration: underline;
+}
+
+.viewer-label-action input[type='file'] {
+  display: none;
+}
+
 /* Responsive: stack panels on mobile */
 @media (max-width: 767.98px) {
   .split-view {
