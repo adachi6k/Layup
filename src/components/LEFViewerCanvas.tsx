@@ -2,12 +2,13 @@ import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { Container, Row, Col, Card, Form, Badge, ListGroup } from 'react-bootstrap';
 import type { LEFData, LEFMacro, LEFRect } from '../types/lef';
 import { LAYER_COLORS, getLayerColor } from '../types/lef';
+import { useCanvasViewport, syncCanvasDpr } from '../hooks/useCanvasViewport';
 
 interface LEFViewerCanvasProps { lefData: LEFData; filename: string; onFileLoad: (content: string, filename: string) => void; }
 
-const LOW_DETAIL_THRESHOLD = 0.15; // 絶対スケール閾値
-const PIXEL_SKIP_THRESHOLD = 0.6;   // 低詳細時にスキップするピクセルサイズ
-const PIN_MARKER_SIZE = 6;          // ピンマーカー表示サイズ (px)
+const LOW_DETAIL_THRESHOLD = 0.15;
+const PIXEL_SKIP_THRESHOLD = 0.6;
+const PIN_MARKER_SIZE = 6;
 
 export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, onFileLoad }) => {
   const [selectedMacro, setSelectedMacro] = useState<LEFMacro | null>(lefData.macros[0] || null);
@@ -15,21 +16,17 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
   const [hoveredPin, setHoveredPin] = useState<string | null>(null);
   const [visibleLayers, setVisibleLayers] = useState<Set<string>>(new Set());
   const [fitMode, setFitMode] = useState<'both'|'width'|'height'|'cover'>('width');
-  const [zoom, setZoom] = useState(1); // baseFitScale * zoom = absScale
-  const [pan, setPan] = useState({ x:0, y:0 }); // ピクセル座標
   const [baseFitScale, setBaseFitScale] = useState(1);
-  const [isPanning, setIsPanning] = useState(false);
-  const panStart = useRef<{x:number;y:number;origX:number;origY:number}|null>(null);
-  const containerRef = useRef<HTMLDivElement|null>(null);
-  const canvasRef = useRef<HTMLCanvasElement|null>(null);
-  const [containerSize, setContainerSize] = useState({ width:100, height:100 });
-  const [fps, setFps] = useState(0);
   const [dragActive, setDragActive] = useState(false);
   const frameTimesRef = useRef<number[]>([]);
   const pinScreenPosRef = useRef<{name:string;x:number;y:number}[]>([]);
   const culledRef = useRef<number>(0);
+  // fps and culled are only rendered in DEV mode; tracked here to avoid conditional hook usage
+  const [fps, setFps] = useState(0);
   const [culled, setCulled] = useState(0);
   const [cursorMacro, setCursorMacro] = useState<{x:number;y:number}|null>(null);
+
+  const { containerRef, canvasRef, containerSize, zoom, setZoom, pan, setPan, isPanning, startPan, updatePan, endPan } = useCanvasViewport();
 
   // レイヤーTYPE (ROUTING/CUT/...) ルックアップ
   const layerTypeMap = useMemo(()=>{
@@ -71,13 +68,12 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
   // マクロ境界ボックス
   const macroBBox = useMemo(()=>{ if(!selectedMacro) return null; const {size,pins,obs}=selectedMacro; const explicit=size.width>0&&size.height>0; let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity; const rects:LEFRect[]=[]; obs.forEach(r=>rects.push(r)); pins.forEach(p=>p.rects.forEach(r=>rects.push(r))); for(const r of rects){ if(r.x1<minX)minX=r.x1; if(r.y1<minY)minY=r.y1; if(r.x2>maxX)maxX=r.x2; if(r.y2>maxY)maxY=r.y2; } if(!explicit){ if(minX===Infinity){minX=0;minY=0;maxX=1;maxY=1;} return {originX:minX,originY:minY,width:(maxX-minX)||1,height:(maxY-minY)||1,derived:true}; } return {originX:0,originY:0,width:size.width||1,height:size.height||1,derived:false}; },[selectedMacro]);
 
-  // 全矩形配列
+  // All rects
   const allRects = useMemo(()=>{ if(!selectedMacro) return [] as LEFRect[]; const out:LEFRect[]=[]; selectedMacro.obs.forEach(r=>out.push(r)); selectedMacro.pins.forEach(p=>p.rects.forEach(r=>out.push(r))); return out; },[selectedMacro]);
 
-  // リサイズ監視
-  useEffect(()=>{ if(!containerRef.current) return; const el=containerRef.current; const update=()=>{ const r=el.getBoundingClientRect(); setContainerSize({width:r.width,height:r.height}); }; update(); const ro=new ResizeObserver(update); ro.observe(el); return ()=>ro.disconnect(); },[]);
+  // ResizeObserver is handled by useCanvasViewport
 
-  // フィット
+  // Fit
   const fit=useCallback((mode:'both'|'width'|'height'|'cover', bbox=macroBBox)=>{
     if(!bbox) return;
     const {width,height}=bbox;
@@ -115,10 +111,11 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
     return { x0, x1, y0: yBottom, y1: yTop, w: x1 - x0, h: yTop - yBottom };
   },[macroBBox,absScale,pan.x,pan.y,containerSize.width,containerSize.height]);
 
-  // 描画ルーチン
+  // Draw routine
   const draw = useCallback(()=>{
     const canvas=canvasRef.current; if(!canvas||!macroBBox) return; const ctx=canvas.getContext('2d'); if(!ctx) return;
-    const dpr=window.devicePixelRatio||1; const {width:cssW,height:cssH}=containerSize; if(canvas.width!==Math.round(cssW*dpr) || canvas.height!==Math.round(cssH*dpr)){ canvas.width=Math.round(cssW*dpr); canvas.height=Math.round(cssH*dpr); canvas.style.width=cssW+'px'; canvas.style.height=cssH+'px'; }
+    const {width:cssW,height:cssH}=containerSize; syncCanvasDpr(canvas, cssW, cssH);
+    const dpr=window.devicePixelRatio||1;
     ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH); ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,cssW,cssH);
     const {originX,originY,width:macroW,height:macroH}=macroBBox; ctx.translate(pan.x,pan.y); ctx.scale(absScale,absScale); ctx.translate(-originX,-originY); ctx.translate(0,macroH); ctx.scale(1,-1);
     const low=absScale<LOW_DETAIL_THRESHOLD; const reg=visibleRegion; const marginFactor=0.08; let vx0=-Infinity,vy0=-Infinity,vx1=Infinity,vy1=Infinity; if(reg){ const mx=reg.w*marginFactor; const my=reg.h*marginFactor; vx0=reg.x0-mx; vx1=reg.x1+mx; vy0=reg.y0-my; vy1=reg.y1+my; }
@@ -194,22 +191,19 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
 
   useEffect(()=>{ draw(); },[draw]);
 
-  // ホイールズーム
+  // Wheel zoom
   const handleWheel=(e:React.WheelEvent)=>{ if(!macroBBox) return; e.preventDefault(); const factor=e.deltaY<0?1.1:0.9; setZoom(prev=>{ const nz=Math.min(50,Math.max(0.02,prev*factor)); const rect=containerRef.current?.getBoundingClientRect(); const cx=(e.clientX-(rect?.left||0)-pan.x)/(baseFitScale*prev); const cy=(e.clientY-(rect?.top||0)-pan.y)/(baseFitScale*prev); setPan({ x:e.clientX-(rect?.left||0)-cx*baseFitScale*nz, y:e.clientY-(rect?.top||0)-cy*baseFitScale*nz }); return nz; }); };
-  // パン操作
-  const onMouseDown=(e:React.MouseEvent)=>{ if(e.button!==0)return; panStart.current={x:e.clientX,y:e.clientY,origX:pan.x,origY:pan.y}; setIsPanning(true); };
+  // Pan
+  const onMouseDown=(e:React.MouseEvent)=>{ startPan(e); };
   const onMouseMove=(e:React.MouseEvent)=>{
-    // パン処理
-    if(isPanning&&panStart.current){ const dx=e.clientX-panStart.current.x; const dy=e.clientY-panStart.current.y; setPan({ x:panStart.current.origX+dx, y:panStart.current.origY+dy }); }
+    if(isPanning) updatePan(e.clientX, e.clientY);
     if(!macroBBox) return;
     const rect=containerRef.current?.getBoundingClientRect(); if(!rect) return;
     const sx=e.clientX-rect.left; const sy=e.clientY-rect.top;
     const {originX,originY,height:macroH}=macroBBox; const mx=originX + (sx - pan.x)/absScale; const my=originY + macroH - (sy - pan.y)/absScale; setCursorMacro({x:mx,y:my});
-    // ピンホバー検出
     const threshold=PIN_MARKER_SIZE*0.75; let found:string|null=null; for(const p of pinScreenPosRef.current){ const dxp=sx-p.x; const dyp=sy-p.y; if(Math.abs(dxp)<=threshold && Math.abs(dyp)<=threshold){ found=p.name; break; } }
     setHoveredPin(found);
   };
-  const endPan=()=>{ setIsPanning(false); panStart.current=null; };
   const onMouseLeaveCanvas=()=>{ endPan(); setHoveredPin(null); setCursorMacro(null); };
 
   // コントロール群
@@ -250,7 +244,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
           <Badge bg="secondary" className="ms-2">{selectedMacro.className}</Badge>
           {derived && <Badge bg="warning" text="dark" className="ms-2">Derived SIZE</Badge>}
         </h5>
-        <small className="text-muted">Size: {macroW.toFixed(2)} × {macroH.toFixed(2)} units {derived && '(from geometry)'} | Rects {allRects.length} {low && 'LOD'} | Scale {absScale.toFixed(3)} | FPS {fps}</small>
+        <small className="text-muted">Size: {macroW.toFixed(2)} × {macroH.toFixed(2)} units {derived && '(from geometry)'} | Rects {allRects.length} {low && 'LOD'} | Scale {absScale.toFixed(3)}{import.meta.env.DEV && ` | FPS ${fps}`}</small>
       </Card.Header>
       <Card.Body className="p-1 flex-grow-1 d-flex" style={{minHeight:0}}>
         <div ref={containerRef} className="w-100 h-100 position-relative" style={{overflow:'hidden',cursor:isPanning?'grabbing':'default'}}
@@ -265,7 +259,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
             <button className="btn btn-sm btn-outline-secondary" onClick={fitBoth}>Fit Both</button>
             <button className="btn btn-sm btn-outline-secondary" onClick={fitCover}>Cover</button>
             <span className="badge bg-light text-dark" style={{fontSize:10}}>{fitMode}</span>
-            <span className="badge bg-light text-dark" style={{fontSize:10}}>culled {culled}</span>
+            {import.meta.env.DEV && <span className="badge bg-light text-dark" style={{fontSize:10}}>culled {culled}</span>}
           </div>
           {cursorMacro && (
             <div style={{position:'absolute',bottom:6,left:6,zIndex:15,background:'rgba(0,0,0,0.55)',color:'#fff',padding:'2px 6px',fontSize:11,borderRadius:4}}>

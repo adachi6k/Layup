@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type React from 'react';
 import { Badge, Button, Card, Col, Form, ListGroup, Row } from 'react-bootstrap';
 import type { GDSBBox, GDSCell, GDSData, GDSPath, GDSPolygon } from '../types/gds';
 import { flattenGDSCell, transformBBox } from '../utils/gdsParser';
+import { useCanvasViewport, syncCanvasDpr } from '../hooks/useCanvasViewport';
 
 interface GDSViewerProps {
   gdsData: GDSData;
@@ -79,18 +80,12 @@ const collectReferenceBoxes = (cell: GDSCell, data: GDSData): { boxes: RefBox[];
 };
 
 export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const panStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const { containerRef, canvasRef, containerSize, zoom, setZoom, pan, setPan, isPanning, startPan, updatePan, endPan } = useCanvasViewport();
   const [selectedCellName, setSelectedCellName] = useState(gdsData.topCellName);
   const [visibleLayers, setVisibleLayers] = useState<Set<number>>(new Set());
   const [showRefs, setShowRefs] = useState(true);
   const [flattenRefs, setFlattenRefs] = useState(false);
-  const [containerSize, setContainerSize] = useState({ width: 100, height: 100 });
   const [baseScale, setBaseScale] = useState(1);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState(false);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false });
 
@@ -111,18 +106,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     setVisibleLayers(new Set(allLayers));
   }, [allLayers]);
 
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const el = containerRef.current;
-    const update = () => {
-      const rect = el.getBoundingClientRect();
-      setContainerSize({ width: rect.width, height: rect.height });
-    };
-    update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
+  // ResizeObserver is handled by useCanvasViewport
 
   const fit = useCallback(() => {
     const pad = 0.06;
@@ -184,12 +168,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     const dpr = window.devicePixelRatio || 1;
     const cssW = containerSize.width;
     const cssH = containerSize.height;
-    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
-      canvas.width = Math.round(cssW * dpr);
-      canvas.height = Math.round(cssH * dpr);
-      canvas.style.width = `${cssW}px`;
-      canvas.style.height = `${cssH}px`;
-    }
+    syncCanvasDpr(canvas, cssW, cssH);
 
     const start = performance.now();
     ctx.save();
@@ -286,25 +265,12 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     });
   };
 
-  const onMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0 && e.button !== 1) return;
-    panStartRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
-    setIsPanning(true);
-  };
+  const onMouseDown = (e: React.MouseEvent) => { startPan(e); };
 
   const onMouseMove = (e: React.MouseEvent) => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (rect) setCursor(screenToWorld(e.clientX - rect.left, e.clientY - rect.top));
-    if (!isPanning || !panStartRef.current) return;
-    setPan({
-      x: panStartRef.current.panX + e.clientX - panStartRef.current.x,
-      y: panStartRef.current.panY + e.clientY - panStartRef.current.y,
-    });
-  };
-
-  const endPan = () => {
-    panStartRef.current = null;
-    setIsPanning(false);
+    if (isPanning) updatePan(e.clientX, e.clientY);
   };
 
   const toggleLayer = (layer: number) => {
@@ -409,8 +375,8 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               >
                 <canvas ref={canvasRef} style={{ position: 'absolute', inset: 0 }} />
                 <div className="position-absolute bottom-0 start-0 m-2 small bg-light border rounded px-2 py-1">
-                  visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms
-                  {cursor && <> / x {cursor.x.toFixed(2)} um, y {cursor.y.toFixed(2)} um</>}
+                  {import.meta.env.DEV && <>visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms</>}
+                  {cursor && <>{import.meta.env.DEV && ' / '}x {cursor.x.toFixed(2)} um, y {cursor.y.toFixed(2)} um</>}
                 </div>
               </div>
             </Card.Body>
