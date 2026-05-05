@@ -45,7 +45,7 @@ Open an issue if you need unsupported constructs.
    - View file summary
    - Toggle layer visibility
    - Select macros
-3. Explore the central SVG view:
+3. Explore the central Canvas view:
    - Zoom with mouse wheel / pinch
    - Pan by dragging
 4. Inspect pins in the right panel:
@@ -60,8 +60,7 @@ All parsing happens locally inside the browser (no server upload).
 
 ### Prerequisites
 
-- Node.js 18+  
-  (Note: Vite 7 recommends Node 20+. Node 18 runs with warnings.)
+- Node.js 18+
 - npm / yarn / pnpm
 
 ### Setup
@@ -89,14 +88,19 @@ Build artifacts are emitted to `dist/` and can be hosted on any static hosting (
 
 | Path | Purpose |
 |------|---------|
+| `src/App.tsx` | Application shell that chooses the active LEF / DEF / GDS viewer |
+| `src/hooks/useLayoutFiles.ts` | File loading, URL loading, parser dispatch, and view-mode state |
+| `src/components/AppNavbar.tsx` | Loaded-file summary and LEF / DEF / GDS view-mode switcher |
+| `src/components/FileDropZone.tsx` | Initial drag-and-drop, file picker, and sample-file loading UI |
 | `src/types/lef.ts` | TypeScript interfaces for LEF entities |
 | `src/utils/lefParser.ts` | Text → normalized in‑memory model |
+| `src/components/LEFViewerCanvas.tsx` | Main LEF Canvas visualization with macro, layer, and pin panels |
+| `src/types/def.ts` | TypeScript interfaces for DEF entities |
+| `src/utils/defParser.ts` | DEF text parser for die area, components, pins, and net connectivity |
+| `src/components/DEFLayoutViewer.tsx` | DEF Canvas visualization for die, components, pins, and LEF-assisted macro sizes |
 | `src/types/gds.ts` | TypeScript interfaces for GDSII entities |
 | `src/utils/gdsParser.ts` | Binary GDSII → normalized in-memory model |
-| `src/components/FileDropZone.tsx` | File / URL ingestion UI |
-| `src/components/LEFViewer.tsx` | Main layered SVG visualization |
 | `src/components/GDSViewer.tsx` | GDSII canvas visualization |
-| `src/components/...` | Layer toggles, pin list, macro controls |
 
 ### Data Flow
 
@@ -107,15 +111,25 @@ Normalized layout model (macros / pins / layers / rects / polygons / references)
     ↓
 React state
     ↓
-SVG or Canvas rendering (grouped per layer -> geometry -> styled)
+Canvas rendering (grouped per layer -> geometry -> styled)
 ```
 
 ### Rendering Strategy
 
-- LEF coordinate units are mapped to scalable SVG units.
-- Each layer grouped into a `<g>` for easy show/hide.
-- Zoom / pan handled via dynamic `viewBox`.
-- Colors derived from hash mapping (future: configurable palette).
+- LEF, DEF, and GDS coordinates are mapped into Canvas world coordinates.
+- Each viewer owns format-specific drawing while sharing common interaction concepts: wheel zoom, drag pan, reset / fit, cursor coordinates, and layer visibility.
+- LEF uses a Canvas renderer as the active production viewer; the older SVG and debug viewer variants have been removed to keep the codebase focused.
+- Colors are deterministic per layer or orientation, with format-specific palettes.
+
+### Development Checks
+
+```bash
+npm install
+npm run lint
+npm run build
+```
+
+There is no dedicated `npm test` script yet; parser and coordinate-transform tests are planned future work.
 
 ---
 
@@ -199,7 +213,7 @@ Q: Does the file ever leave my machine?
 A: No. Parsing and rendering happen entirely in the browser.
 
 Q: What units are shown?  
-A: LEF units (micron scale) are scaled proportionally into SVG coordinates.
+A: LEF units (micron scale) are scaled proportionally into Canvas world coordinates.
 
 Q: Are non-rectangular shapes supported?  
 A: Not yet—RECT only. File an issue if you require POLYGON.
