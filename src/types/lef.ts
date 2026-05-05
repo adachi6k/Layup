@@ -15,8 +15,8 @@ export interface LEFRect {
 
 export interface LEFPin {
   name: string;
-  direction: 'INPUT' | 'OUTPUT' | 'INOUT';
-  use: 'SIGNAL' | 'POWER' | 'GROUND';
+  direction: 'INPUT' | 'OUTPUT' | 'INOUT' | 'FEEDTHRU' | 'UNKNOWN';
+  use: 'SIGNAL' | 'POWER' | 'GROUND' | 'CLOCK' | 'ANALOG' | 'SCAN' | 'RESET' | 'UNKNOWN';
   rects: LEFRect[];
 }
 
@@ -42,7 +42,7 @@ export interface LEFData {
   version: string;
   layers: LEFLayer[];
   macros: LEFMacro[];
-  via?: any[]; // VIA definitions if needed
+  via?: unknown[]; // VIA definitions if needed
 }
 
 // Color mapping for different layers
