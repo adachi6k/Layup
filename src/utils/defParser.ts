@@ -125,16 +125,5 @@ export function parseDEF(content: string): DEFData {
   if(currentNet) flushNet();
 
   const result: DEFData = { version, units, dieArea, components, pins, nets };
-  if(import.meta.env?.DEV){
-    console.log('[DEF Parser]', {
-      version, units,
-      dieArea: `${dieArea.x1},${dieArea.y1} -> ${dieArea.x2},${dieArea.y2}`,
-      components: components.length,
-      compPlaced: components.filter(c=>c.placed).length,
-      pins: pins.length,
-      nets: nets.length,
-      netsConn: nets.reduce((a,n)=>a+n.connections.length,0)
-    });
-  }
   return result;
 }

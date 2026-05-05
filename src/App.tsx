@@ -67,27 +67,27 @@ function App() {
           <GDSViewer gdsData={gdsData} filename={gdsFilename} />
         )}
 
-        {/* 単独 LEF */}
+        {/* LEF only */}
         {lefData && !loading && !defData && !gdsData && (
           <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
         )}
-        {/* 単独 DEF (LEF 未ロード) */}
+        {/* DEF only (no LEF loaded) */}
         {defData && !lefData && !gdsData && !loading && (
           <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
             <div style={{flex:1,minHeight:0}}>
               <DEFLayoutViewer def={defData} lef={null} />
             </div>
-            <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF layout (LEF未ロードのためサイズ未解決あり)</div>
+            <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF layout (macro sizes unresolved – load a LEF file to resolve)</div>
           </div>
         )}
-        {/* 両方ロード時: モード分岐 */}
+        {/* Both loaded – view mode split */}
         {lefData && defData && !loading && viewMode==='split' && (
           <div className="d-flex" style={{height:'100%'}}>
             <div style={{flex:'0 0 55%',display:'flex',flexDirection:'column',borderRight:'1px solid #ddd',padding:4,minWidth:0}}>
               <div style={{flex:1,minHeight:0}}>
                 <DEFLayoutViewer def={defData} lef={lefData} />
               </div>
-              <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF die + components (pan/zoom)</div>
+              <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF die + components</div>
             </div>
             <div style={{flex:'1 1 auto',overflow:'hidden',paddingLeft:4,minWidth:0}}>
               <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
@@ -102,7 +102,7 @@ function App() {
             <div style={{flex:1,minHeight:0}}>
               <DEFLayoutViewer def={defData} lef={lefData} />
             </div>
-            <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF die + components (pan/zoom)</div>
+            <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF die + components</div>
           </div>
         )}
       </div>
