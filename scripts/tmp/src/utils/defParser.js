@@ -48,7 +48,6 @@ export function parseDEF(content) {
     // Vite 環境以外(tsc単体)での一時実行時は import.meta.env が未定義なので安全チェック
     if (import.meta?.env?.DEV) {
         // 開発時の簡易確認ログ
-        // eslint-disable-next-line no-console
         console.log('[DEF Parser]', {
             version,
             units,

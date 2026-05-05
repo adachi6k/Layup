@@ -1,5 +1,18 @@
 import type { LEFData, LEFMacro, LEFPin, LEFRect, LEFLayer } from '../types/lef';
 
+const LAYER_TYPES: LEFLayer['type'][] = ['ROUTING', 'CUT', 'OVERLAP', 'MASTERSLICE'];
+const PIN_DIRECTIONS: LEFPin['direction'][] = ['INPUT', 'OUTPUT', 'INOUT', 'FEEDTHRU'];
+const PIN_USES: LEFPin['use'][] = ['SIGNAL', 'POWER', 'GROUND', 'CLOCK', 'ANALOG', 'SCAN', 'RESET'];
+
+const parseLayerType = (value: string): LEFLayer['type'] =>
+  LAYER_TYPES.includes(value as LEFLayer['type']) ? value as LEFLayer['type'] : 'ROUTING';
+
+const parsePinDirection = (value: string): LEFPin['direction'] =>
+  PIN_DIRECTIONS.includes(value as LEFPin['direction']) ? value as LEFPin['direction'] : 'UNKNOWN';
+
+const parsePinUse = (value: string): LEFPin['use'] =>
+  PIN_USES.includes(value as LEFPin['use']) ? value as LEFPin['use'] : 'UNKNOWN';
+
 export class LEFParser {
   private lines: string[] = [];
   private currentIndex = 0;
@@ -70,7 +83,7 @@ export class LEFParser {
       if (propLine.includes('TYPE')) {
         const typeMatch = propLine.match(/TYPE\s+(\w+)/);
         if (typeMatch) {
-          layer.type = typeMatch[1] as any;
+          layer.type = parseLayerType(typeMatch[1]);
         }
       } else if (propLine.includes('SPACING')) {
         const spacingMatch = propLine.match(/SPACING\s+([0-9.]+)/);
@@ -173,11 +186,11 @@ export class LEFParser {
 
       if (currentLine.includes('DIRECTION')) {
         const dirMatch = currentLine.match(/DIRECTION\s+(\w+)/);
-        if (dirMatch) pin.direction = dirMatch[1] as any;
+        if (dirMatch) pin.direction = parsePinDirection(dirMatch[1]);
         this.nextLine();
       } else if (currentLine.includes('USE')) {
         const useMatch = currentLine.match(/USE\s+(\w+)/);
-        if (useMatch) pin.use = useMatch[1] as any;
+        if (useMatch) pin.use = parsePinUse(useMatch[1]);
         this.nextLine();
       } else if (currentLine.startsWith('PORT')) {
         const portRects = this.parsePort();

@@ -78,9 +78,25 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
   useEffect(()=>{ if(!containerRef.current) return; const el=containerRef.current; const update=()=>{ const r=el.getBoundingClientRect(); setContainerSize({width:r.width,height:r.height}); }; update(); const ro=new ResizeObserver(update); ro.observe(el); return ()=>ro.disconnect(); },[]);
 
   // フィット
-  const fit=(mode:'both'|'width'|'height'|'cover', bbox=macroBBox)=>{ if(!bbox) return; const {width,height}=bbox; const P=0.05; const availW=containerSize.width*(1-P*2); const availH=containerSize.height*(1-P*2); const sW=availW/width; const sH=availH/height; let s=sW; if(mode==='both') s=Math.min(sW,sH); if(mode==='height') s=sH; if(mode==='width') s=sW; if(mode==='cover') s=Math.max(sW,sH); setBaseFitScale(s); setZoom(1); setPan({ x:(containerSize.width-width*s)/2, y:(containerSize.height-height*s)/2 }); setFitMode(mode); };
-  useEffect(()=>{ if(macroBBox) fit(fitMode, macroBBox); /* eslint-disable-next-line */ },[macroBBox, containerSize.width, containerSize.height]);
-  useEffect(()=>{ if(macroBBox) fit(fitMode, macroBBox); /* eslint-disable-next-line */ },[selectedMacro]);
+  const fit=useCallback((mode:'both'|'width'|'height'|'cover', bbox=macroBBox)=>{
+    if(!bbox) return;
+    const {width,height}=bbox;
+    const P=0.05;
+    const availW=containerSize.width*(1-P*2);
+    const availH=containerSize.height*(1-P*2);
+    const sW=availW/width;
+    const sH=availH/height;
+    let s=sW;
+    if(mode==='both') s=Math.min(sW,sH);
+    if(mode==='height') s=sH;
+    if(mode==='width') s=sW;
+    if(mode==='cover') s=Math.max(sW,sH);
+    setBaseFitScale(s);
+    setZoom(1);
+    setPan({ x:(containerSize.width-width*s)/2, y:(containerSize.height-height*s)/2 });
+    setFitMode(mode);
+  },[containerSize.height, containerSize.width, macroBBox]);
+  useEffect(()=>{ if(macroBBox) fit(fitMode, macroBBox); },[fit, fitMode, macroBBox]);
 
   const absScale = baseFitScale * zoom;
 
@@ -174,7 +190,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
     ctx.restore();
     const now=performance.now(); const ft=frameTimesRef.current; ft.push(now); while(ft.length && now-ft[0]>1000) ft.shift(); setFps(ft.length);
   culledRef.current = culledCount; setCulled(culledCount);
-  },[macroBBox,allRects,visibleLayers,absScale,pan.x,pan.y,containerSize,visibleRegion,selectedMacro]);
+  },[macroBBox,allRects,visibleLayers,absScale,pan.x,pan.y,containerSize,visibleRegion,selectedMacro,getLayerRank,hoveredPin,selectedPin]);
 
   useEffect(()=>{ draw(); },[draw]);
 
@@ -204,7 +220,12 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
   const fitHeight=()=>macroBBox&&fit('height');
   const fitBoth=()=>macroBBox&&fit('both');
   const fitCover=()=>macroBBox&&fit('cover');
-  const toggleLayer=(layer:string)=> setVisibleLayers(prev=>{ const ns=new Set(prev); ns.has(layer)?ns.delete(layer):ns.add(layer); return ns; });
+  const toggleLayer=(layer:string)=> setVisibleLayers(prev=>{
+    const ns=new Set(prev);
+    if(ns.has(layer)) ns.delete(layer);
+    else ns.add(layer);
+    return ns;
+  });
 
   const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.dataTransfer.dropEffect='copy'; if(!dragActive) setDragActive(true); };
   const handleDragEnter = (e: React.DragEvent) => { e.preventDefault(); if(!dragActive) setDragActive(true); };
