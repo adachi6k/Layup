@@ -18,6 +18,8 @@ interface RefBox {
 const MAX_FLATTENED_SHAPES = 250_000;
 const FLATTEN_WARN_SHAPES = 50_000;
 const MAX_REFERENCE_BOXES = 75_000;
+/** Maximum GDS hierarchy depth the hierarchy renderer will descend before stopping. */
+const MAX_HIERARCHY_DEPTH = 32;
 /** Throttle interval (ms) for React state updates driven by frequent events (mousemove, draw). */
 const THROTTLE_MS = 100;
 
@@ -90,6 +92,37 @@ const renderPath = (ctx: CanvasRenderingContext2D, path: GDSPath, absScale: numb
   ctx.stroke();
 };
 
+/**
+ * Estimate the total number of shapes that would be produced by flattening the given cell.
+ * Uses memoized recursive expansion (accounting for AREF multipliers) up to depth MAX_HIERARCHY_DEPTH and
+ * short-circuits once `cap` is exceeded. This gives an accurate per-cell estimate instead
+ * of the file-wide primitive totals, which can be misleading for heavily instanced designs.
+ */
+const estimateFlattenedShapeCount = (data: GDSData, cellName: string, cap: number): number => {
+  const cache = new Map<string, number>();
+  const visiting = new Set<string>();
+
+  const estimate = (name: string, depth: number): number => {
+    if (depth > MAX_HIERARCHY_DEPTH) return 0;
+    if (cache.has(name)) return cache.get(name)!;
+    if (visiting.has(name)) return 0; // circular ref guard
+    const cell = data.cellMap.get(name);
+    if (!cell) return 0;
+    visiting.add(name);
+    let count = cell.rects.length + cell.polygons.length + cell.paths.length;
+    for (const ref of cell.references) {
+      if (count >= cap) break;
+      const instances = (ref.columns ?? 1) * (ref.rows ?? 1);
+      count += instances * estimate(ref.name, depth + 1);
+    }
+    visiting.delete(name);
+    cache.set(name, count);
+    return count;
+  };
+
+  return estimate(cellName, 0);
+};
+
 const collectReferenceBoxes = (cell: GDSCell, data: GDSData): { boxes: RefBox[]; truncated: boolean } => {
   const boxes: RefBox[] = [];
   let truncated = false;
@@ -131,9 +164,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   const cursorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // RenderStats: throttled to avoid re-renders every animation frame.
-  const renderStatsLatestRef = useRef({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false });
+  const renderStatsLatestRef = useRef({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
   const renderStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false });
+  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
 
   // Clean up throttle timers on unmount.
   useEffect(() => () => {
@@ -185,6 +218,14 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     return flattenGDSCell(gdsData, selectedCell.name, MAX_FLATTENED_SHAPES);
   }, [flattenRefs, gdsData, selectedCell]);
 
+  // Estimated expanded shape count for the selected cell, used to warn before flattening.
+  // Recomputed only when the selected cell or data changes, not when flattenRefs toggles,
+  // so the warning shows before the user commits to flattening.
+  const estimatedFlattenCount = useMemo(
+    () => estimateFlattenedShapeCount(gdsData, selectedCellName, MAX_FLATTENED_SHAPES + 1),
+    [gdsData, selectedCellName],
+  );
+
   const refBoxResult = useMemo(() => (selectedCell ? collectReferenceBoxes(selectedCell, gdsData) : { boxes: [], truncated: false }), [gdsData, selectedCell]);
   const refBoxes = refBoxResult.boxes;
 
@@ -233,6 +274,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     let visible = 0;
     let culled = 0;
     let refsVisible = 0;
+    let depthLimitHit = false;
 
     if (flattenRefs && flattened) {
       // Flatten mode: draw pre-flattened polygons and paths directly (all in world coords).
@@ -257,8 +299,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
       // No shape copies are created; canvas context transforms are used instead.
       // localVisibleBBox is the visible region in the current cell's local coordinate system,
       // used for per-shape culling without transforming individual shape bboxes.
-      const drawCellRecursive = (cell: GDSCell, depth: number, localVisibleBBox: GDSBBox) => {
-        if (depth > 32) return;
+      // effectiveScale is absScale × accumulated magnification, used for minimum stroke width.
+      const drawCellRecursive = (cell: GDSCell, depth: number, localVisibleBBox: GDSBBox, effectiveScale: number) => {
+        if (depth > MAX_HIERARCHY_DEPTH) { depthLimitHit = true; return; }
 
         // Draw rects
         ctx.globalAlpha = 0.68;
@@ -279,14 +322,15 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           renderPolygon(ctx, polygon);
         }
 
-        // Draw paths
+        // Draw paths — use effectiveScale so the 1px minimum stroke is correct at this
+        // depth even when the canvas has accumulated magnification from parent transforms.
         ctx.globalAlpha = 0.8;
         for (const path of cell.paths) {
           if (!visibleLayers.has(path.layer)) continue;
           if (!intersects(path.bbox, localVisibleBBox)) { culled += 1; continue; }
           visible += 1;
           ctx.strokeStyle = layerColor(path.layer);
-          renderPath(ctx, path, absScale);
+          renderPath(ctx, path, effectiveScale);
         }
 
         // Recurse into references with cell-level bbox culling.
@@ -320,14 +364,15 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               );
               // Compute the visible bbox in the target cell's local coordinate system for culling.
               const childLocalBBox = inverseTransformBBox(localVisibleBBox, T);
-              drawCellRecursive(target, depth + 1, childLocalBBox);
+              // Accumulate magnification so path stroke widths are correct at this depth.
+              drawCellRecursive(target, depth + 1, childLocalBBox, effectiveScale * m);
               ctx.restore();
             }
           }
         }
       };
 
-      drawCellRecursive(selectedCell, 0, visibleBBox);
+      drawCellRecursive(selectedCell, 0, visibleBBox, absScale);
     }
     ctx.globalAlpha = 1;
 
@@ -353,6 +398,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
       drawMs: performance.now() - start,
       truncated: Boolean(flattened?.truncated),
       refsTruncated: refBoxResult.truncated,
+      depthLimitHit,
     };
     renderStatsLatestRef.current = newStats;
     if (!renderStatsTimerRef.current) {
@@ -463,9 +509,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 checked={flattenRefs}
                 onChange={(e) => setFlattenRefs(e.target.checked)}
               />
-              {flattenRefs && (gdsData.stats.rectCount + gdsData.stats.polygonCount + gdsData.stats.pathCount) > FLATTEN_WARN_SHAPES && (
+              {!flattenRefs && estimatedFlattenCount > FLATTEN_WARN_SHAPES && (
                 <div className="text-warning small mt-1">
-                  Large file: flatten may be slow ({(gdsData.stats.rectCount + gdsData.stats.polygonCount + gdsData.stats.pathCount).toLocaleString()} shapes).
+                  Large cell: flatten may be slow (est. {estimatedFlattenCount >= MAX_FLATTENED_SHAPES + 1 ? `>${MAX_FLATTENED_SHAPES.toLocaleString()}` : estimatedFlattenCount.toLocaleString()} shapes).
                 </div>
               )}
               {renderStats.truncated && (
@@ -476,6 +522,11 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               {renderStats.refsTruncated && showRefs && !flattenRefs && (
                 <div className="text-warning small mt-1">
                   Reference boxes truncated at {MAX_REFERENCE_BOXES.toLocaleString()} instances.
+                </div>
+              )}
+              {renderStats.depthLimitHit && !flattenRefs && (
+                <div className="text-warning small mt-1">
+                  Hierarchy deeper than 32 levels; some geometry may not be shown. Enable &ldquo;Flatten refs&rdquo; to display fully.
                 </div>
               )}
               <hr />
