@@ -96,6 +96,52 @@ export const useLayoutFiles = () => {
     }
   }, [defData, lefData]);
 
+  /**
+   * Load multiple files at once (e.g. LEF + DEF dropped together).
+   * All files are parsed in one batch so the view mode is resolved correctly.
+   */
+  const handleMultipleFilesLoad = useCallback(
+    (files: Array<{ content: string | ArrayBuffer; filename: string }>) => {
+      setLoading(true);
+      setError(null);
+      let hasLef = false;
+      let hasDef = false;
+      let hasGds = false;
+      try {
+        for (const { content, filename: fileName } of files) {
+          const lower = fileName.toLowerCase();
+          if (lower.endsWith('.lef')) {
+            const parser = new LEFParser();
+            const parsed = parser.parse(content as string);
+            setLefData(parsed);
+            setFilename(fileName);
+            hasLef = true;
+          } else if (lower.endsWith('.def')) {
+            const parsed = parseDEF(content as string);
+            setDefData(parsed);
+            setDefFilename(fileName);
+            hasDef = true;
+          } else if (lower.endsWith('.gds') || lower.endsWith('.gdsii')) {
+            const parsed = parseGDS(content as ArrayBuffer);
+            setGdsData(parsed);
+            setGdsFilename(fileName);
+            hasGds = true;
+          }
+        }
+        // Determine the most useful view mode after batch load
+        if (hasLef && hasDef) setViewMode('split');
+        else if (hasGds && !hasLef && !hasDef) setViewMode('gds');
+        else if (hasLef) setViewMode('lef');
+        else if (hasDef) setViewMode('def');
+      } catch (err) {
+        setError(`Failed to parse file: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
+
   const handleUrlLoad = useCallback(async (url: string) => {
     setLoading(true);
     setError(null);
@@ -133,6 +179,7 @@ export const useLayoutFiles = () => {
     setViewMode,
     handleBinaryFileLoad,
     handleFileLoad,
+    handleMultipleFilesLoad,
     handleUrlLoad,
   };
 };

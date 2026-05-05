@@ -247,10 +247,11 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
         <small className="text-muted">Size: {macroW.toFixed(2)} × {macroH.toFixed(2)} units {derived && '(from geometry)'} | Rects {allRects.length} {low && 'LOD'} | Scale {absScale.toFixed(3)}{import.meta.env.DEV && ` | FPS ${fps}`}</small>
       </Card.Header>
       <Card.Body className="p-1 flex-grow-1 d-flex" style={{minHeight:0}}>
-        <div ref={containerRef} className="w-100 h-100 position-relative" style={{overflow:'hidden',cursor:isPanning?'grabbing':'default'}}
+        <div ref={containerRef} className="w-100 h-100 position-relative overflow-hidden"
+             style={{cursor:isPanning?'grabbing':'default'}}
              onWheel={handleWheel} onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseLeave={onMouseLeaveCanvas} onMouseUp={endPan}
              onDragEnter={handleDragEnter} onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}>
-          <div style={{position:'absolute',top:6,left:6,zIndex:10,display:'flex',gap:4,background:'rgba(255,255,255,0.85)',padding:'4px 6px',borderRadius:4,boxShadow:'0 1px 3px rgba(0,0,0,0.25)',alignItems:'center'}}>
+          <div className="lef-canvas-controls">
             <button className="btn btn-sm btn-outline-secondary" onClick={zoomIn}>+</button>
             <button className="btn btn-sm btn-outline-secondary" onClick={zoomOut}>-</button>
             <button className="btn btn-sm btn-outline-secondary" onClick={resetView}>Reset</button>
@@ -258,27 +259,27 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
             <button className="btn btn-sm btn-outline-secondary" onClick={fitHeight}>Fit H</button>
             <button className="btn btn-sm btn-outline-secondary" onClick={fitBoth}>Fit Both</button>
             <button className="btn btn-sm btn-outline-secondary" onClick={fitCover}>Cover</button>
-            <span className="badge bg-light text-dark" style={{fontSize:10}}>{fitMode}</span>
-            {import.meta.env.DEV && <span className="badge bg-light text-dark" style={{fontSize:10}}>culled {culled}</span>}
+            <span className="badge bg-light text-dark small">{fitMode}</span>
+            {import.meta.env.DEV && <span className="badge bg-light text-dark small">culled {culled}</span>}
           </div>
           {cursorMacro && (
-            <div style={{position:'absolute',bottom:6,left:6,zIndex:15,background:'rgba(0,0,0,0.55)',color:'#fff',padding:'2px 6px',fontSize:11,borderRadius:4}}>
+            <div className="lef-cursor-hud">
               ({cursorMacro.x.toFixed(2)}, {cursorMacro.y.toFixed(2)}) {hoveredPin && <span style={{marginLeft:6,color:'#ffc107'}}>PIN: {hoveredPin}</span>}
             </div>
           )}
           {dragActive && (
-            <div style={{position:'absolute',inset:0,zIndex:20,background:'rgba(0,123,255,0.15)',border:'3px dashed #0d6efd',color:'#0d6efd',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:600,fontSize:18}}>
+            <div className="lef-drag-overlay">
               Drop LEF file to load
             </div>
           )}
-          <canvas ref={canvasRef} style={{width:'100%',height:'100%',display:'block',background:'#fff',border:'1px solid #ddd',borderRadius:4,boxShadow:'0 2px 4px rgba(0,0,0,0.1)'}} />
+          <canvas ref={canvasRef} className="lef-canvas-el" />
           {(!selectedMacro || !macroBBox) && (
-            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#666',pointerEvents:'none'}}>
+            <div className="lef-canvas-empty">
               {lefData.macros.length? 'Select a macro from the list' : 'No MACRO definitions in this LEF'}
             </div>
           )}
           {selectedMacro && macroBBox && visibleLayers.size===0 && (
-            <div style={{position:'absolute',top:0,left:0,right:0,padding:8,textAlign:'center',background:'rgba(255,255,0,0.25)',fontSize:12,fontWeight:600}}>All layers hidden</div>
+            <div className="lef-all-hidden-msg">All layers hidden</div>
           )}
         </div>
       </Card.Body>
@@ -286,10 +287,10 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
   ); };
 
   return (
-    <Container fluid className="p-2" style={{height:'100vh'}}>
-      <Row style={{height:'100%'}}>
-        <Col lg={2} md={3} className="pe-2">
-          <Card className="mb-2" style={{fontSize:'0.85rem'}}>
+    <Container fluid className="p-2 lef-container">
+      <Row className="h-100">
+        <Col lg={2} md={3} className="pe-2 small">
+          <Card className="mb-2">
             <Card.Header className="py-2"><h6 className="mb-0">File Information</h6></Card.Header>
             <Card.Body className="py-2">
               <div><strong>File:</strong> {filename}</div>
@@ -298,22 +299,22 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
               <div><strong>Layers:</strong> {allLayers.length}</div>
             </Card.Body>
           </Card>
-            <Card className="mb-2" style={{fontSize:'0.85rem'}}>
-              <Card.Header className="py-2"><h6 className="mb-0">Layers</h6></Card.Header>
-              <Card.Body className="py-2" style={{maxHeight:'200px',overflowY:'auto'}}>
-                {allLayers.map(layer=> (
-                  <Form.Check key={layer} type="checkbox" id={`layer-${layer}`}
-                    label={<div className="d-flex align-items-center"><div style={{width:12,height:12,backgroundColor:LAYER_COLORS[layer]||LAYER_COLORS.default,marginRight:6,border:'1px solid #ccc'}}/> {layer}</div>}
-                    checked={visibleLayers.has(layer)} onChange={()=>toggleLayer(layer)} />
-                ))}
-              </Card.Body>
-            </Card>
-          <Card style={{fontSize:'0.85rem'}}>
+          <Card className="mb-2">
+            <Card.Header className="py-2"><h6 className="mb-0">Layers</h6></Card.Header>
+            <Card.Body className="py-2 lef-sidebar-scroll">
+              {allLayers.map(layer=> (
+                <Form.Check key={layer} type="checkbox" id={`layer-${layer}`}
+                  label={<div className="d-flex align-items-center gap-1"><div className="layer-swatch" style={{backgroundColor:LAYER_COLORS[layer]||LAYER_COLORS.default}}/> {layer}</div>}
+                  checked={visibleLayers.has(layer)} onChange={()=>toggleLayer(layer)} />
+              ))}
+            </Card.Body>
+          </Card>
+          <Card>
             <Card.Header className="py-2"><h6 className="mb-0">Macros</h6></Card.Header>
-            <Card.Body className="py-2" style={{maxHeight:'250px',overflowY:'auto'}}>
+            <Card.Body className="py-2 lef-macro-scroll">
               <ListGroup variant="flush">
                 {lefData.macros.map((macro,i)=>(
-                  <ListGroup.Item key={i} action active={selectedMacro?.name===macro.name} onClick={()=>setSelectedMacro(macro)} className="py-1 px-2" style={{fontSize:'0.8rem'}}>
+                  <ListGroup.Item key={i} action active={selectedMacro?.name===macro.name} onClick={()=>setSelectedMacro(macro)} className="py-1 px-2 small">
                     <div className="fw-bold">{macro.name}</div>
                     <small className="text-muted">{macro.pins.length} pins, {macro.className}</small>
                   </ListGroup.Item>
@@ -322,21 +323,21 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
             </Card.Body>
           </Card>
         </Col>
-        <Col lg={7} md={6} className="px-1 d-flex flex-column" style={{height:'100%'}}>
+        <Col lg={7} md={6} className="px-1 d-flex flex-column h-100">
           {renderCanvasArea()}
         </Col>
         <Col lg={3} md={3} className="ps-2">
           {selectedMacro && (
-            <Card style={{fontSize:'0.85rem',height:'100%'}}>
+            <Card className="lef-pin-card">
               <Card.Header className="py-2"><h6 className="mb-0">Pins ({selectedMacro.pins.length})</h6></Card.Header>
-              <Card.Body className="py-2" style={{overflow:'auto'}}>
+              <Card.Body className="py-2 overflow-auto">
                 <ListGroup variant="flush">
                   {selectedMacro.pins.map((pin,i)=>(
-                    <ListGroup.Item key={i} className="py-1 px-2" style={{fontSize:'0.8rem',cursor:'pointer',background:selectedPin===pin.name?'#ffecec':undefined}} onClick={()=>setSelectedPin(p=>p===pin.name?null:pin.name)}>
+                    <ListGroup.Item key={i} className="py-1 px-2 small" style={{cursor:'pointer',background:selectedPin===pin.name?'#ffecec':undefined}} onClick={()=>setSelectedPin(p=>p===pin.name?null:pin.name)}>
                       <div className="fw-bold">{pin.name}</div>
                       <div>
-                        <Badge bg="primary" className="me-1" style={{fontSize:'0.7rem'}}>{pin.direction}</Badge>
-                        <Badge bg="secondary" style={{fontSize:'0.7rem'}}>{pin.use}</Badge>
+                        <Badge bg="primary" className="me-1 small">{pin.direction}</Badge>
+                        <Badge bg="secondary" className="small">{pin.use}</Badge>
                       </div>
                       <small className="text-muted">{pin.rects.length} geometries</small>
                     </ListGroup.Item>

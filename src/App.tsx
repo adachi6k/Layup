@@ -7,6 +7,7 @@ import { GDSViewer } from './components/GDSViewer';
 import { useLayoutFiles } from './hooks/useLayoutFiles';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap-icons/font/bootstrap-icons.css';
+import './App.css';
 
 function App() {
   const {
@@ -22,11 +23,12 @@ function App() {
     setViewMode,
     handleBinaryFileLoad,
     handleFileLoad,
+    handleMultipleFilesLoad,
     handleUrlLoad,
   } = useLayoutFiles();
 
   return (
-    <div className="App" style={{ height: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div className="app-root">
       <AppNavbar
         lefLoaded={Boolean(lefData)}
         defLoaded={Boolean(defData)}
@@ -38,7 +40,7 @@ function App() {
         setViewMode={setViewMode}
       />
 
-      <div style={{ flex: 1, overflow: 'hidden' }}>
+      <div className="app-main">
         {loading && (
           <Container className="mt-4">
             <div className="text-center">
@@ -60,7 +62,12 @@ function App() {
         )}
 
         {!lefData && !defData && !gdsData && !loading && !error && (
-          <FileDropZone onFileLoad={handleFileLoad} onBinaryFileLoad={handleBinaryFileLoad} onUrlLoad={handleUrlLoad} />
+          <FileDropZone
+            onFileLoad={handleFileLoad}
+            onBinaryFileLoad={handleBinaryFileLoad}
+            onMultipleFilesLoad={handleMultipleFilesLoad}
+            onUrlLoad={handleUrlLoad}
+          />
         )}
 
         {gdsData && !loading && (viewMode==='gds' || (!lefData && !defData)) && (
@@ -73,23 +80,23 @@ function App() {
         )}
         {/* DEF only (no LEF loaded) */}
         {defData && !lefData && !gdsData && !loading && (
-          <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
-            <div style={{flex:1,minHeight:0}}>
+          <div className="h-100 d-flex flex-column">
+            <div className="flex-grow-1" style={{minHeight:0}}>
               <DEFLayoutViewer def={defData} lef={null} />
             </div>
-            <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF layout (macro sizes unresolved – load a LEF file to resolve)</div>
+            <div className="viewer-label">DEF layout (macro sizes unresolved – load a LEF file to resolve)</div>
           </div>
         )}
         {/* Both loaded – view mode split */}
         {lefData && defData && !loading && viewMode==='split' && (
-          <div className="d-flex" style={{height:'100%'}}>
-            <div style={{flex:'0 0 55%',display:'flex',flexDirection:'column',borderRight:'1px solid #ddd',padding:4,minWidth:0}}>
-              <div style={{flex:1,minHeight:0}}>
+          <div className="split-view">
+            <div className="split-def-panel">
+              <div className="flex-grow-1" style={{minHeight:0}}>
                 <DEFLayoutViewer def={defData} lef={lefData} />
               </div>
-              <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF die + components</div>
+              <div className="viewer-label">DEF die + components</div>
             </div>
-            <div style={{flex:'1 1 auto',overflow:'hidden',paddingLeft:4,minWidth:0}}>
+            <div className="split-lef-panel">
               <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
             </div>
           </div>
@@ -98,11 +105,11 @@ function App() {
           <LEFViewer lefData={lefData} filename={filename} onFileLoad={handleFileLoad} />
         )}
         {defData && !loading && viewMode==='def' && (
-          <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
-            <div style={{flex:1,minHeight:0}}>
+          <div className="h-100 d-flex flex-column">
+            <div className="flex-grow-1" style={{minHeight:0}}>
               <DEFLayoutViewer def={defData} lef={lefData} />
             </div>
-            <div style={{padding:'2px 6px',fontSize:10,color:'#555'}}>DEF die + components</div>
+            <div className="viewer-label">DEF die + components</div>
           </div>
         )}
       </div>
