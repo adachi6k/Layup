@@ -176,6 +176,8 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
       setCursorUm({x:xUm,y:yUm});
     }
     if(isPanning && panStartRef.current){
+      // Intentionally not calling hook's updatePan() here: we apply pan via rAF
+      // throttling to avoid excessive state updates during fast mouse moves.
       const next = { x:panStartRef.current.origX+(e.clientX-panStartRef.current.x), y:panStartRef.current.origY+(e.clientY-panStartRef.current.y) };
       panPendingRef.current = next;
       if(panCommitRafRef.current==null){

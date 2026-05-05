@@ -54,11 +54,16 @@ export function useCanvasViewport(): CanvasViewport {
     return () => ro.disconnect();
   }, []);
 
+  const panRef = useRef(pan);
+  panRef.current = pan;
+
   const startPan = useCallback((e: React.MouseEvent) => {
     if (e.button !== 0 && e.button !== 1) return;
-    panStartRef.current = { x: e.clientX, y: e.clientY, origX: pan.x, origY: pan.y };
+    // Read current pan from ref so the callback never holds stale values
+    // even if it is re-used across multiple re-renders.
+    panStartRef.current = { x: e.clientX, y: e.clientY, origX: panRef.current.x, origY: panRef.current.y };
     setIsPanning(true);
-  }, [pan.x, pan.y]);
+  }, []);
 
   const updatePan = useCallback((clientX: number, clientY: number) => {
     const start = panStartRef.current;
