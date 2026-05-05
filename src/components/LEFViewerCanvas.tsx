@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { Container, Row, Col, Card, Form, Badge, ListGroup } from 'react-bootstrap';
 import type { LEFData, LEFMacro, LEFRect } from '../types/lef';
-import { LAYER_COLORS, getLayerColor } from '../types/lef';
+import { getLayerColor } from '../types/lef';
 import { useCanvasViewport, syncCanvasDpr } from '../hooks/useCanvasViewport';
 
 interface LEFViewerCanvasProps { lefData: LEFData; filename: string; onFileLoad: (content: string, filename: string) => void; }
@@ -9,6 +9,172 @@ interface LEFViewerCanvasProps { lefData: LEFData; filename: string; onFileLoad:
 const LOW_DETAIL_THRESHOLD = 0.15;
 const PIXEL_SKIP_THRESHOLD = 0.6;
 const PIN_MARKER_SIZE = 6;
+
+// ── Fill pattern types ─────────────────────────────────────────────────────
+type FillPatternType =
+  | 'None' | 'Solid' | 'Horizontal' | 'Vertical'
+  | 'Diagonal /' | 'Diagonal \\' | 'Cross' | 'Diagonal Cross'
+  | 'Grid' | 'Dots Sparse' | 'Dots Dense' | '50% Dither';
+
+// Pattern drawing constants (all sizes in CSS pixels, converted to world units via absScale)
+const PATTERN_BACKGROUND_ALPHA = 0.2;  // faint tint behind hatch lines
+const PATTERN_SPACING_PX = 8;          // perpendicular distance between hatch lines
+const PATTERN_LINE_WIDTH_PX = 1.2;     // hatch line stroke width
+const DOT_SPACING_DENSE_PX = 6;        // dot grid pitch – dense
+const DOT_SPACING_SPARSE_PX = 12;      // dot grid pitch – sparse
+const DOT_RADIUS_DENSE_PX = 1.5;       // dot radius – dense
+const DOT_RADIUS_SPARSE_PX = 2;        // dot radius – sparse
+const DITHER_CELL_SIZE_PX = 3;         // checkerboard cell size for 50% dither
+
+const FILL_PATTERNS: readonly FillPatternType[] = [
+  'None', 'Solid', 'Horizontal', 'Vertical',
+  'Diagonal /', 'Diagonal \\', 'Cross', 'Diagonal Cross',
+  'Grid', 'Dots Sparse', 'Dots Dense', '50% Dither',
+];
+
+// ── CanvasPattern tile cache for expensive (area-proportional) patterns ─────
+// Keyed by `${color}::${patternType}::${dpr}` so tiles are shared across rects
+// and only re-built when the color, pattern type, or device pixel ratio changes.
+const _patternTileCache = new Map<string, HTMLCanvasElement | null>();
+
+/**
+ * Build a small repeating tile canvas for dot/dither patterns.
+ * Tiles are cached by `color::patternType::dpr` so they are created at most
+ * once per unique combination and reused across all rectangles on the same frame.
+ * @returns The tile canvas, or null if a 2D context could not be obtained.
+ */
+function makePatternTile(patternType: 'Dots Sparse' | 'Dots Dense' | '50% Dither', color: string, dpr: number): HTMLCanvasElement | null {
+  const key = `${color}::${patternType}::${dpr}`;
+  if (_patternTileCache.has(key)) return _patternTileCache.get(key)!;
+  const tile = document.createElement('canvas');
+  const tc = tile.getContext('2d');
+  if (!tc) { _patternTileCache.set(key, null); return null; }
+  if (patternType === 'Dots Dense') {
+    const sp = Math.round(DOT_SPACING_DENSE_PX * dpr);
+    tile.width = sp; tile.height = sp;
+    tc.fillStyle = color;
+    tc.beginPath();
+    tc.arc(sp / 2, sp / 2, DOT_RADIUS_DENSE_PX * dpr, 0, Math.PI * 2);
+    tc.fill();
+  } else if (patternType === 'Dots Sparse') {
+    const sp = Math.round(DOT_SPACING_SPARSE_PX * dpr);
+    tile.width = sp; tile.height = sp;
+    tc.fillStyle = color;
+    tc.beginPath();
+    tc.arc(sp / 2, sp / 2, DOT_RADIUS_SPARSE_PX * dpr, 0, Math.PI * 2);
+    tc.fill();
+  } else { // '50% Dither'
+    const cs = Math.round(DITHER_CELL_SIZE_PX * dpr);
+    tile.width = cs * 2; tile.height = cs * 2;
+    tc.fillStyle = color;
+    tc.fillRect(0, 0, cs, cs);
+    tc.fillRect(cs, cs, cs, cs);
+  }
+  _patternTileCache.set(key, tile);
+  return tile;
+}
+
+/**
+ * Draw a hatching/fill pattern for a rectangle in world (LEF) coordinates.
+ * All sizes are expressed in world units; absScale converts to CSS pixels.
+ * The caller is responsible for having the Y-flip transform active.
+ *
+ * Dot and dither patterns use a GPU-tiled CanvasPattern (created once per
+ * color and cached) to avoid per-rectangle JS loops proportional to on-screen
+ * area. Line-based patterns iterate over lines only, which is O(side-length).
+ */
+function drawHatch(
+  ctx: CanvasRenderingContext2D,
+  x: number, y: number, w: number, h: number,
+  color: string,
+  patternType: FillPatternType,
+  absScale: number,
+  alpha: number,
+  dpr: number,
+): void {
+  if (patternType === 'None') return;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  ctx.fillStyle = color;
+  ctx.strokeStyle = color;
+
+  if (patternType === 'Solid') {
+    ctx.globalAlpha = alpha;
+    ctx.fillRect(x, y, w, h);
+  } else {
+    // Faint background tint so layer regions are visible even without lines
+    ctx.globalAlpha = alpha * PATTERN_BACKGROUND_ALPHA;
+    ctx.fillRect(x, y, w, h);
+    ctx.globalAlpha = alpha;
+
+    // Spacing & line width in world units so they appear constant in CSS pixels
+    const sp = PATTERN_SPACING_PX / absScale;
+    const lw = PATTERN_LINE_WIDTH_PX / absScale;
+    ctx.lineWidth = lw;
+
+    if (patternType === 'Horizontal' || patternType === 'Cross') {
+      ctx.beginPath();
+      const y0 = Math.floor(y / sp) * sp;
+      for (let ly = y0; ly <= y + h; ly += sp) { ctx.moveTo(x, ly); ctx.lineTo(x + w, ly); }
+      ctx.stroke();
+    }
+    if (patternType === 'Vertical' || patternType === 'Cross') {
+      ctx.beginPath();
+      const x0 = Math.floor(x / sp) * sp;
+      for (let lx = x0; lx <= x + w; lx += sp) { ctx.moveTo(lx, y); ctx.lineTo(lx, y + h); }
+      ctx.stroke();
+    }
+    if (patternType === 'Grid') {
+      const gs = sp / 2;
+      ctx.beginPath();
+      const y0 = Math.floor(y / gs) * gs;
+      for (let ly = y0; ly <= y + h; ly += gs) { ctx.moveTo(x, ly); ctx.lineTo(x + w, ly); }
+      const x0 = Math.floor(x / gs) * gs;
+      for (let lx = x0; lx <= x + w; lx += gs) { ctx.moveTo(lx, y); ctx.lineTo(lx, y + h); }
+      ctx.stroke();
+    }
+    if (patternType === 'Diagonal /' || patternType === 'Diagonal Cross') {
+      // y = x − c  (slope +1 in world coords → "/" on screen because Y-axis is flipped)
+      const ds = sp * Math.SQRT2;
+      const c0 = Math.floor((x - (y + h)) / ds) * ds;
+      ctx.beginPath();
+      for (let c = c0; c <= (x + w) - y; c += ds) {
+        ctx.moveTo(x, x - c); ctx.lineTo(x + w, x + w - c);
+      }
+      ctx.stroke();
+    }
+    if (patternType === 'Diagonal \\' || patternType === 'Diagonal Cross') {
+      // y = c − x  (slope −1 in world coords → "\" on screen)
+      const ds = sp * Math.SQRT2;
+      const c0 = Math.floor((x + y) / ds) * ds;
+      ctx.beginPath();
+      for (let c = c0; c <= (x + w) + (y + h); c += ds) {
+        ctx.moveTo(x, c - x); ctx.lineTo(x + w, c - (x + w));
+      }
+      ctx.stroke();
+    }
+    if (patternType === 'Dots Sparse' || patternType === 'Dots Dense' || patternType === '50% Dither') {
+      // Use a pre-built CanvasPattern tile so the browser's GPU handles tiling
+      // instead of a JS loop proportional to on-screen area.
+      const tile = makePatternTile(patternType, color, dpr);
+      if (tile) {
+        const pat = ctx.createPattern(tile, 'repeat');
+        if (pat) {
+          // setTransform with the inverse of the current CTM makes the pattern
+          // tile in device-pixel space (constant screen size at all zoom levels).
+          pat.setTransform(ctx.getTransform().inverse());
+          ctx.fillStyle = pat;
+          ctx.fillRect(x, y, w, h);
+        }
+      }
+    }
+  }
+
+  ctx.restore();
+}
 
 export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, onFileLoad }) => {
   const [selectedMacro, setSelectedMacro] = useState<LEFMacro | null>(lefData.macros[0] || null);
@@ -18,6 +184,8 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
   const [fitMode, setFitMode] = useState<'both'|'width'|'height'|'cover'>('width');
   const [baseFitScale, setBaseFitScale] = useState(1);
   const [dragActive, setDragActive] = useState(false);
+  const [darkBg, setDarkBg] = useState(false);
+  const [fillPattern, setFillPattern] = useState<FillPatternType>('Solid');
   const frameTimesRef = useRef<number[]>([]);
   const pinScreenPosRef = useRef<{name:string;x:number;y:number}[]>([]);
   const culledRef = useRef<number>(0);
@@ -116,10 +284,11 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
     const canvas=canvasRef.current; if(!canvas||!macroBBox) return; const ctx=canvas.getContext('2d'); if(!ctx) return;
     const {width:cssW,height:cssH}=containerSize; syncCanvasDpr(canvas, cssW, cssH);
     const dpr=window.devicePixelRatio||1;
-    ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH); ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,cssW,cssH);
+    ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH); ctx.fillStyle=darkBg?'#000000':'#ffffff'; ctx.fillRect(0,0,cssW,cssH);
     const {originX,originY,width:macroW,height:macroH}=macroBBox; ctx.translate(pan.x,pan.y); ctx.scale(absScale,absScale); ctx.translate(-originX,-originY); ctx.translate(0,macroH); ctx.scale(1,-1);
     const low=absScale<LOW_DETAIL_THRESHOLD; const reg=visibleRegion; const marginFactor=0.08; let vx0=-Infinity,vy0=-Infinity,vx1=Infinity,vy1=Infinity; if(reg){ const mx=reg.w*marginFactor; const my=reg.h*marginFactor; vx0=reg.x0-mx; vx1=reg.x1+mx; vy0=reg.y0-my; vy1=reg.y1+my; }
     const baseStroke=(Math.max(macroW,macroH)/1500);
+    const rectStroke=darkBg?'rgba(255,255,255,0.45)':'rgba(0,0,0,0.55)';
     let culledCount=0;
     for(const r of allRects){
       if(!visibleLayers.has(r.layer)) continue;
@@ -127,10 +296,12 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
       if(!(r.x2 >= vx0 && r.x1 <= vx1 && r.y2 >= vy0 && r.y1 <= vy1)){ culledCount++; continue; }
       const w=r.x2-r.x1; const h=r.y2-r.y1;
       if(low && w*absScale<PIXEL_SKIP_THRESHOLD && h*absScale<PIXEL_SKIP_THRESHOLD){ culledCount++; continue; }
-  const color=getLayerColor(r.layer);
-      ctx.fillStyle=color; ctx.globalAlpha=low?0.55:0.8; ctx.fillRect(r.x1,r.y1,w,h); ctx.globalAlpha=1; ctx.lineWidth=baseStroke/absScale; ctx.strokeStyle='#000'; ctx.strokeRect(r.x1,r.y1,w,h);
+      const color=getLayerColor(r.layer);
+      drawHatch(ctx, r.x1, r.y1, w, h, color, fillPattern, absScale, low?0.55:0.8, dpr);
+      // Always draw the outline so rect boundaries are visible even with 'None' fill
+      ctx.lineWidth=baseStroke/absScale; ctx.strokeStyle=rectStroke; ctx.strokeRect(r.x1,r.y1,w,h);
     }
-    ctx.lineWidth=(Math.max(macroW,macroH)/1500)/absScale; ctx.setLineDash([ (Math.max(macroW,macroH)/600), (Math.max(macroW,macroH)/600) ]); ctx.strokeStyle='#000'; ctx.strokeRect(0,0,macroW,macroH); ctx.setLineDash([]);
+    ctx.lineWidth=(Math.max(macroW,macroH)/1500)/absScale; ctx.setLineDash([ (Math.max(macroW,macroH)/600), (Math.max(macroW,macroH)/600) ]); ctx.strokeStyle=darkBg?'#cccccc':'#000000'; ctx.strokeRect(0,0,macroW,macroH); ctx.setLineDash([]);
 
     // ピン描画: 変換解除しスクリーン座標で一定サイズ表示
     ctx.restore();
@@ -174,20 +345,20 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
     const isHover = hoveredPin===pin.name;
     const size = PIN_MARKER_SIZE * (isSelected?1.5:(isHover?1.2:1));
     const half=size/2;
-    ctx.fillStyle=isSelected?'#dc3545':'#000'; ctx.globalAlpha=0.85; ctx.fillRect(screenX-half,screenY-half,size,size);
-    ctx.globalAlpha=1; ctx.fillStyle='#fff'; ctx.fillRect(screenX-half+1,screenY-half+1,size-2,size-2);
+    ctx.fillStyle=isSelected?'#dc3545':(darkBg?'rgba(255,255,255,0.9)':'#000'); ctx.globalAlpha=0.85; ctx.fillRect(screenX-half,screenY-half,size,size);
+    ctx.globalAlpha=1; ctx.fillStyle=darkBg?'#111':'#fff'; ctx.fillRect(screenX-half+1,screenY-half+1,size-2,size-2);
     ctx.fillStyle=isSelected?'#dc3545':(isHover?'#6610f2':'#0d6efd'); ctx.fillRect(screenX-half+2,screenY-half+2,size-4,size-4);
         const label=pin.name; const padX=4; const padY=2; const metrics=ctx.measureText(label); const labelW=metrics.width+padX*2; const labelH=12+padY; const labelX=screenX+PIN_MARKER_SIZE/2+4; const labelY=screenY;
-        ctx.fillStyle='rgba(255,255,255,0.92)'; ctx.strokeStyle='rgba(0,0,0,0.3)'; ctx.lineWidth=1;
+        ctx.fillStyle=darkBg?'rgba(20,20,20,0.88)':'rgba(255,255,255,0.92)'; ctx.strokeStyle=darkBg?'rgba(200,200,200,0.4)':'rgba(0,0,0,0.3)'; ctx.lineWidth=1;
         // ラウンド矩形 (fallback: path)
         ctx.beginPath(); const r=3; const x=labelX; const y=labelY-labelH/2; const w=labelW; const h=labelH; ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r); ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h); ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r); ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath(); ctx.fill(); ctx.stroke();
-        ctx.fillStyle='#000'; ctx.fillText(label,labelX+padX,labelY);
+        ctx.fillStyle=darkBg?'#eee':'#000'; ctx.fillText(label,labelX+padX,labelY);
       }
     }
     ctx.restore();
     const now=performance.now(); const ft=frameTimesRef.current; ft.push(now); while(ft.length && now-ft[0]>1000) ft.shift(); setFps(ft.length);
   culledRef.current = culledCount; setCulled(culledCount);
-  },[macroBBox,allRects,visibleLayers,absScale,pan.x,pan.y,containerSize,visibleRegion,selectedMacro,getLayerRank,hoveredPin,selectedPin]);
+  },[macroBBox,allRects,visibleLayers,absScale,pan.x,pan.y,containerSize,visibleRegion,selectedMacro,getLayerRank,hoveredPin,selectedPin,darkBg,fillPattern]);
 
   useEffect(()=>{ draw(); },[draw]);
 
@@ -260,6 +431,23 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
             <button className="btn btn-sm btn-outline-secondary" onClick={fitBoth}>Fit Both</button>
             <button className="btn btn-sm btn-outline-secondary" onClick={fitCover}>Cover</button>
             <span className="badge bg-light text-dark small">{fitMode}</span>
+            <button
+              className={`btn btn-sm ${darkBg ? 'btn-secondary' : 'btn-outline-secondary'}`}
+              onClick={() => setDarkBg(b => !b)}
+              title="Toggle dark background"
+              aria-label={darkBg ? 'Switch to light background' : 'Switch to dark background'}
+              aria-pressed={darkBg}
+            >{darkBg ? '☀' : '🌙'}</button>
+            <Form.Select
+              size="sm"
+              style={{width:'auto'}}
+              value={fillPattern}
+              onChange={e => setFillPattern(e.target.value as FillPatternType)}
+              title="Fill pattern"
+              aria-label="Fill pattern"
+            >
+              {FILL_PATTERNS.map(p => <option key={p} value={p}>{p}</option>)}
+            </Form.Select>
             {import.meta.env.DEV && <span className="badge bg-light text-dark small">culled {culled}</span>}
           </div>
           {cursorMacro && (
@@ -304,7 +492,7 @@ export const LEFViewer: React.FC<LEFViewerCanvasProps> = ({ lefData, filename, o
             <Card.Body className="py-2 lef-sidebar-scroll">
               {allLayers.map(layer=> (
                 <Form.Check key={layer} type="checkbox" id={`layer-${layer}`}
-                  label={<div className="d-flex align-items-center gap-1"><div className="layer-swatch" style={{backgroundColor:LAYER_COLORS[layer]||LAYER_COLORS.default}}/> {layer}</div>}
+                  label={<div className="d-flex align-items-center gap-1"><div className="layer-swatch" style={{backgroundColor:getLayerColor(layer)}}/> {layer}</div>}
                   checked={visibleLayers.has(layer)} onChange={()=>toggleLayer(layer)} />
               ))}
             </Card.Body>
