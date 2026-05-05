@@ -119,13 +119,13 @@ export const getLayerColor = (layerName: string): string => {
   if (m) {
     const n = parseInt(m[1], 10);
     if (n >= 1 && n <= 8) return LAYER_COLORS[key] || LAYER_COLORS.default;
-    // 周期色: M1-M8の新配色に合わせたビビッドな色相を循環使用
-    const baseHues = [204, 0, 120, 51, 313, 169, 33, 276]; // M1..M8の色相に対応
+    // Cycle through the 8 vivid hues matching M1–M8; increase lightness slightly each tier
+    const baseHues = [204, 0, 120, 51, 313, 169, 33, 276]; // hues for M1..M8
     const idx = (n - 1) % baseHues.length;
-    const tier = Math.floor((n - 1) / baseHues.length); // 0,1,2...
+    const tier = Math.floor((n - 1) / baseHues.length); // 0, 1, 2 ...
     const h = baseHues[idx];
-    const s = 90; // ビビッドな彩度
-    const l = Math.max(40, Math.min(65, 55 + (tier % 3 - 1) * 8)); // 47/55/63 付近
+    const s = 90; // vivid saturation
+    const l = Math.max(40, Math.min(65, 55 + (tier % 3 - 1) * 8)); // ~47/55/63
     return hslToHex(h, s, l);
   }
 
@@ -133,11 +133,11 @@ export const getLayerColor = (layerName: string): string => {
   const v = key.match(/^V(\d+)$/);
   if (v) {
     const n = parseInt(v[1], 10);
-    const l = Math.max(30, Math.min(85, 45 + n * 5)); // 番号で少しずつ明るく
+    const l = Math.max(30, Math.min(85, 45 + n * 5)); // gets slightly brighter with each via number
     return hslToHex(0, 0, l);
   }
 
-  // その他は安定ハッシュ (ビビッドな彩度を維持)
+  // Other layers: stable hash-based color with vivid saturation
   const h = hash32(key);
   const hue = h % 360;
   const sat = 80 + (h >>> 10) % 15; // 80-94 (vivid)

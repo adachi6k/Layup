@@ -37,6 +37,12 @@ const FILL_PATTERNS: readonly FillPatternType[] = [
 // and only re-built when the color, pattern type, or device pixel ratio changes.
 const _patternTileCache = new Map<string, HTMLCanvasElement | null>();
 
+/**
+ * Build a small repeating tile canvas for dot/dither patterns.
+ * Tiles are cached by `color::patternType::dpr` so they are created at most
+ * once per unique combination and reused across all rectangles on the same frame.
+ * @returns The tile canvas, or null if a 2D context could not be obtained.
+ */
 function makePatternTile(patternType: 'Dots Sparse' | 'Dots Dense' | '50% Dither', color: string, dpr: number): HTMLCanvasElement | null {
   const key = `${color}::${patternType}::${dpr}`;
   if (_patternTileCache.has(key)) return _patternTileCache.get(key)!;
