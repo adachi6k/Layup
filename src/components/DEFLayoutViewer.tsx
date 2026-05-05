@@ -79,6 +79,11 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     }
   };
 
+  // グリッド Path キャッシュ
+  const gridCacheRef = useRef<{step:number; path:Path2D}|null>(null);
+  const getGridPath = useCallback(()=>{ const targetCellPx=80; const cellUm=targetCellPx/absScale; if(cellUm<=0) return null; const stepRaw=cellUm; const mag=Math.pow(10,Math.floor(Math.log10(stepRaw))); const norm=stepRaw/mag; let gridStep=mag; if(norm>5) gridStep=10*mag; else if(norm>2) gridStep=5*mag; else if(norm>1) gridStep=2*mag; const cache=gridCacheRef.current; if(cache && cache.step===gridStep) return cache.path; // rebuild
+    const startX=Math.floor(dbuToUm(dieArea.x1)/gridStep)*gridStep; const endX=dbuToUm(dieArea.x1)+dieWUm; const startY=Math.floor(dbuToUm(dieArea.y1)/gridStep)*gridStep; const endY=dbuToUm(dieArea.y1)+dieHUm; const p=new Path2D(); for(let x=startX;x<=endX;x+=gridStep){ p.moveTo(x,startY); p.lineTo(x,endY);} for(let y=startY;y<=endY;y+=gridStep){ p.moveTo(startX,y); p.lineTo(endX,y);} gridCacheRef.current={step:gridStep,path:p}; return p; },[absScale,dbuToUm,dieArea.x1,dieArea.y1,dieWUm,dieHUm]);
+
   const draw = useCallback(()=>{ const canvas=canvasRef.current; if(!canvas) return; const ctx=canvas.getContext('2d'); if(!ctx) return; const dpr=window.devicePixelRatio||1; const cssW=containerSize.width; const cssH=containerSize.height; if(canvas.width!==Math.round(cssW*dpr)||canvas.height!==Math.round(cssH*dpr)){ canvas.width=Math.round(cssW*dpr); canvas.height=Math.round(cssH*dpr); canvas.style.width=cssW+'px'; canvas.style.height=cssH+'px'; } const start=performance.now(); ctx.save(); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH); ctx.fillStyle='#fff'; ctx.fillRect(0,0,cssW,cssH); ctx.translate(pan.x,pan.y); ctx.scale(absScale,absScale); // ダイ枠
     ctx.save(); ctx.lineWidth=2/absScale; ctx.strokeStyle='#222'; ctx.setLineDash([8/absScale,6/absScale]); ctx.strokeRect(dbuToUm(dieArea.x1),dbuToUm(dieArea.y1),dieWUm,dieHUm); ctx.setLineDash([]); ctx.restore();
     // グリッド (LOD)
@@ -122,9 +127,21 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     // Stroke batched paths
     ctx.save(); ctx.lineWidth=1/absScale; Object.entries(pathMap).forEach(([color,p])=>{ ctx.strokeStyle=color; ctx.stroke(p); }); if(highDetail){ Object.entries(markerPaths).forEach(([color,p])=>{ ctx.fillStyle=color; ctx.fill(p,'nonzero'); }); } ctx.restore();
     ctx.restore();
+    // PINS (Phase A): 低ズームでは省略、一定ズーム以上で描画
+    const PIN_MIN_SCALE = 0.6; // px/um しきい値
+    if(absScale >= PIN_MIN_SCALE && def.pins && def.pins.length){
+      ctx.save();
+      const pinSizeUm = 1.2; // 正方形サイズ (um)
+      const half = pinSizeUm/2;
+      ctx.lineWidth = 1/absScale;
+      const fill = new Path2D();
+      for(const p of def.pins){ if(!p.placed) continue; const xUm=dbuToUm(p.x); const yUm=dbuToUm(p.y); fill.rect(xUm-half, yUm-half, pinSizeUm, pinSizeUm); }
+      ctx.fillStyle='rgba(200,0,0,0.85)'; ctx.strokeStyle='rgba(120,0,0,0.9)'; ctx.fill(fill); ctx.stroke(fill);
+      ctx.restore();
+    }
     const end=performance.now();
     setPerf({ total: precomputedRef.current.length, visible, culled, drawMs: end-start });
-  },[containerSize.width,containerSize.height,pan.x,pan.y,absScale,isPanning,dieArea.x1,dieArea.y1,dieWUm,dieHUm,dbuToUm]);
+  },[containerSize.width,containerSize.height,pan.x,pan.y,absScale,isPanning,dieArea.x1,dieArea.y1,dieWUm,dieHUm,dbuToUm,def.pins,getGridPath]);
 
   // マクロ解決をメモ化 (描画毎に Map を構築しない)
   const resolveMacroRef = useRef<((name:string)=>{w:number;h:number;raw:string}|undefined)>(undefined);
@@ -140,15 +157,10 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
 
   // (precomputedRef は上部で定義済み)
 
-  // グリッド Path キャッシュ
-  const gridCacheRef = useRef<{step:number; path:Path2D}|null>(null);
-  const getGridPath = useCallback(()=>{ const targetCellPx=80; const cellUm=targetCellPx/absScale; if(cellUm<=0) return null; const stepRaw=cellUm; const mag=Math.pow(10,Math.floor(Math.log10(stepRaw))); const norm=stepRaw/mag; let gridStep=mag; if(norm>5) gridStep=10*mag; else if(norm>2) gridStep=5*mag; else if(norm>1) gridStep=2*mag; const cache=gridCacheRef.current; if(cache && cache.step===gridStep) return cache.path; // rebuild
-    const startX=Math.floor(dbuToUm(dieArea.x1)/gridStep)*gridStep; const endX=dbuToUm(dieArea.x1)+dieWUm; const startY=Math.floor(dbuToUm(dieArea.y1)/gridStep)*gridStep; const endY=dbuToUm(dieArea.y1)+dieHUm; const p=new Path2D(); for(let x=startX;x<=endX;x+=gridStep){ p.moveTo(x,startY); p.lineTo(x,endY);} for(let y=startY;y<=endY;y+=gridStep){ p.moveTo(startX,y); p.lineTo(endX,y);} gridCacheRef.current={step:gridStep,path:p}; return p; },[absScale,dbuToUm,dieArea.x1,dieArea.y1,dieWUm,dieHUm]);
-
   // rAF スロットリング: 状態変化ごとに複数回 draw が走らないように
   const drawRequestedRef = useRef(false);
   const requestDraw = useCallback(()=>{ if(drawRequestedRef.current) return; drawRequestedRef.current=true; requestAnimationFrame(()=>{ drawRequestedRef.current=false; draw(); }); },[draw]);
-  useEffect(()=>{ requestDraw(); },[requestDraw,containerSize.width,containerSize.height,pan.x,pan.y,absScale,def.components]);
+  useEffect(()=>{ requestDraw(); },[requestDraw,containerSize.width,containerSize.height,pan.x,pan.y,absScale,def.components,def.pins]);
 
   const handleWheel=(e:React.WheelEvent)=>{ e.preventDefault();
   // 初期フィット予約が残っていればキャンセル

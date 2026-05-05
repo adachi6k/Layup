@@ -122,6 +122,7 @@ SVG or Canvas rendering (grouped per layer -> geometry -> styled)
 ## Limitations / Known Gaps
 
 - Very large LEF files (tens of thousands of rects) may impact performance.
+- DEF support parses DIEAREA, COMPONENTS, PINS, and NET connectivity, but routed net geometry is not yet rendered.
 - GDS support focuses on BOUNDARY, PATH, SREF, and AREF geometry. Full text/property rendering is not yet supported.
 - VIA compound definitions simplified to rectangles.
 - Error handling for malformed LEF is basic.
@@ -132,7 +133,7 @@ SVG or Canvas rendering (grouped per layer -> geometry -> styled)
 ## Roadmap (Planned Enhancements)
 
 - [ ] 3D layer extrusion / stacked preview
-- [ ] DEF integration (combined LEF + DEF view)
+- [ ] Richer DEF rendering for routed nets and pin shapes
 - [ ] Export (PNG / SVG / PDF)
 - [ ] Advanced filtering (pin name / layer / direction)
 - [ ] Performance optimizations (tiling / virtualization)

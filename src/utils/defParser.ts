@@ -1,5 +1,5 @@
-// DEFファイルMVPパーサ（DIEAREA, COMPONENTS, UNITS, VERSIONのみ）
-import type { DEFData, DEFComponent } from '../types/def';
+// DEF parser for DIEAREA, COMPONENTS, PINS, and NET connectivity.
+import type { DEFData, DEFComponent, DEFPin, DEFNet } from '../types/def';
 
 export function parseDEF(content: string): DEFData {
   const rawLines = content.split(/\r?\n/);
@@ -10,6 +10,14 @@ export function parseDEF(content: string): DEFData {
   const components: DEFComponent[] = [];
   let inComponents = false;
   let currentComp: { name:string; macro:string; block:string[] } | null = null;
+  // PINS
+  const pins: DEFPin[] = [];
+  let inPins = false;
+  let currentPin: { name:string; block:string[] } | null = null;
+  // NETS (接続のみ)
+  const nets: DEFNet[] = [];
+  let inNets = false;
+  let currentNet: { name:string; conns: {inst?:string; pin:string; isTopPin:boolean}[] } | null = null;
 
   const flushComponent = () => {
     if(!currentComp) return;
@@ -22,6 +30,29 @@ export function parseDEF(content: string): DEFData {
     else if(placedNoParen){ placed=true; x=+placedNoParen[1]; y=+placedNoParen[2]; orient=placedNoParen[3]; }
     components.push({ name: currentComp.name, macro: currentComp.macro, x, y, orient, placed });
     currentComp=null;
+  };
+  const flushPin = () => {
+    if(!currentPin) return;
+    const full = currentPin.block.join(' ');
+    // 例: - PAD1 + NET CLK + DIRECTION INPUT + USE SIGNAL + LAYER M3 ( 100 200 ) ( 120 220 ) + PLACED ( 100 200 ) N ;
+    const name = currentPin.name;
+    let net: string|undefined; const netM = full.match(/\+\s+NET\s+(\S+)/i); if(netM) net=netM[1];
+    let direction: string|undefined; const dirM = full.match(/\+\s+DIRECTION\s+(INPUT|OUTPUT|INOUT|FEEDTHRU)/i); if(dirM) direction=dirM[1].toUpperCase();
+    let use: string|undefined; const useM = full.match(/\+\s+USE\s+(SIGNAL|POWER|GROUND|CLOCK|ANALOG|SCAN|RESET)/i); if(useM) use=useM[1].toUpperCase();
+    let layer: string|undefined; let shape: {x1:number;y1:number;x2:number;y2:number}|undefined;
+    const layerRectM = full.match(/\+\s+LAYER\s+(\S+)\s+\(\s*([\d.+-]+)\s+([\d.+-]+)\s*\)\s*\(\s*([\d.+-]+)\s+([\d.+-]+)\s*\)/i);
+    if(layerRectM){ layer=layerRectM[1]; shape={ x1:+layerRectM[2], y1:+layerRectM[3], x2:+layerRectM[4], y2:+layerRectM[5] }; }
+    // 位置: + PLACED ( x y ) N  / + FIXED ( x y ) N
+    let x=0,y=0,orient='N',placed=false,fixed=false;
+    const placedM = full.match(/\+\s+(PLACED|FIXED)\s*\(\s*([\d.+-]+)\s+([\d.+-]+)\s*\)\s*(\w+)?/i);
+    if(placedM){ placed=true; fixed=/FIXED/i.test(placedM[1]); x=+placedM[2]; y=+placedM[3]; if(placedM[4]) orient=placedM[4]; }
+    pins.push({ name, net, direction, use, layer, shape, x, y, orient, placed, fixed });
+    currentPin=null;
+  };
+  const flushNet = () => {
+    if(!currentNet) return;
+    nets.push({ name: currentNet.name, connections: currentNet.conns });
+    currentNet=null;
   };
 
   for(let i=0;i<lines.length;i++){
@@ -39,6 +70,16 @@ export function parseDEF(content: string): DEFData {
       // flush any pending
       if(currentComp) flushComponent();
       inComponents=false; continue;
+    } else if(line.startsWith('PINS ')){
+      inPins=true; continue;
+    } else if(inPins && line.startsWith('END PINS')){
+      if(currentPin) flushPin();
+      inPins=false; continue;
+    } else if(line.startsWith('NETS ')){
+      inNets=true; continue;
+    } else if(inNets && line.startsWith('END NETS')){
+      if(currentNet) flushNet();
+      inNets=false; continue;
     } else if(inComponents && line.startsWith('-')){
       // 新規コンポーネント開始: - <name> <macro> ... ; (継続あり)
       if(currentComp) flushComponent();
@@ -48,23 +89,51 @@ export function parseDEF(content: string): DEFData {
         if(/;\s*$/.test(line)) flushComponent(); // 単行完結
       }
       continue;
+    } else if(inPins && line.startsWith('-')){
+      if(currentPin) flushPin();
+      const m=line.match(/-\s+(\S+)/);
+      if(m){ currentPin={ name:m[1], block:[line] }; if(/;\s*$/.test(line)) flushPin(); }
+      continue;
+    } else if(inNets && line.startsWith('-')){
+      if(currentNet) flushNet();
+      // ネット開始: - <netName> ( inst pin ) ( PIN <pinName> ) ... ;
+      const m=line.match(/-\s+(\S+)/);
+      if(m){ currentNet={ name:m[1], conns:[] }; }
+      // この行に既に接続が含まれる場合もあるので後で共通処理
+    }
+    if(inNets && currentNet){
+      // 接続トークン抽出: ( inst pin ) or ( PIN <name> )
+      const connRe=/\(\s*(PIN|\S+)\s+(\S+)\s*\)/g; let cm:RegExpExecArray|null;
+      while((cm=connRe.exec(line))){
+        if(cm[1]==='PIN') currentNet.conns.push({ isTopPin:true, pin:cm[2] });
+        else currentNet.conns.push({ inst:cm[1], pin:cm[2], isTopPin:false });
+      }
+      if(/;\s*$/.test(line)) flushNet();
+      continue;
     } else if(inComponents && currentComp){
       currentComp.block.push(line);
       if(/;\s*$/.test(line)) flushComponent();
       continue;
+    } else if(inPins && currentPin){
+      currentPin.block.push(line);
+      if(/;\s*$/.test(line)) flushPin();
+      continue;
     }
   }
   if(currentComp) flushComponent();
+  if(currentPin) flushPin();
+  if(currentNet) flushNet();
 
-  const result: DEFData = { version, units, dieArea, components };
-  if((import.meta as any)?.env?.DEV){
-    // eslint-disable-next-line no-console
+  const result: DEFData = { version, units, dieArea, components, pins, nets };
+  if(import.meta.env?.DEV){
     console.log('[DEF Parser]', {
       version, units,
       dieArea: `${dieArea.x1},${dieArea.y1} -> ${dieArea.x2},${dieArea.y2}`,
-      componentCount: components.length,
-      placed: components.filter(c=>c.placed).length,
-      sample: components.slice(0,3)
+      components: components.length,
+      compPlaced: components.filter(c=>c.placed).length,
+      pins: pins.length,
+      nets: nets.length,
+      netsConn: nets.reduce((a,n)=>a+n.connections.length,0)
     });
   }
   return result;
