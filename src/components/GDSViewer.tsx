@@ -60,6 +60,11 @@ const translatedArrayBBox = (instanceBBox: GDSBBox, columnVector: { x: number; y
   return bbox;
 };
 
+/**
+ * Compute the inclusive index range whose translated instance interval can intersect the viewport.
+ * `step` is the array spacing on one axis, `instanceMin/Max` are the single-instance bbox
+ * extents on that axis, and `viewportMin/Max` are the visible region extents on the same axis.
+ */
 const computeVisibleIndexRange = (count: number, step: number, instanceMin: number, instanceMax: number, viewportMin: number, viewportMax: number): [number, number] | null => {
   if (count <= 0) return null;
   if (Math.abs(step) < AXIS_EPSILON) return instanceMax >= viewportMin && instanceMin <= viewportMax ? [0, count - 1] : null;
@@ -70,8 +75,8 @@ const computeVisibleIndexRange = (count: number, step: number, instanceMin: numb
   return start <= end ? [start, end] : null;
 };
 
-/** Return whether a vector moves only along the given axis within AXIS_EPSILON tolerance. */
-const movesAlongAxis = (vector: { x: number; y: number }, axis: 'x' | 'y'): boolean =>
+/** Return whether a non-zero vector is aligned with the given axis within AXIS_EPSILON tolerance. */
+const isNonZeroAxisAlignedStep = (vector: { x: number; y: number }, axis: 'x' | 'y'): boolean =>
   axis === 'x'
     ? Math.abs(vector.x) >= AXIS_EPSILON && Math.abs(vector.y) < AXIS_EPSILON
     : Math.abs(vector.y) >= AXIS_EPSILON && Math.abs(vector.x) < AXIS_EPSILON;
@@ -389,13 +394,13 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           let colEnd = columns - 1;
           let rowStart = 0;
           let rowEnd = rows - 1;
-          const columnsMoveX = movesAlongAxis(columnVector, 'x');
-          const columnsMoveY = movesAlongAxis(columnVector, 'y');
-          const rowsMoveX = movesAlongAxis(rowVector, 'x');
-          const rowsMoveY = movesAlongAxis(rowVector, 'y');
-          const useAxisRanges = (columnsMoveX && rowsMoveY) || (columnsMoveY && rowsMoveX);
+          const columnsMoveX = isNonZeroAxisAlignedStep(columnVector, 'x');
+          const columnsMoveY = isNonZeroAxisAlignedStep(columnVector, 'y');
+          const rowsMoveX = isNonZeroAxisAlignedStep(rowVector, 'x');
+          const rowsMoveY = isNonZeroAxisAlignedStep(rowVector, 'y');
+          const canUseOptimizedRanges = (columnsMoveX && rowsMoveY) || (columnsMoveY && rowsMoveX);
 
-          if (useAxisRanges) {
+          if (canUseOptimizedRanges) {
             const colRange = columnsMoveX
               ? computeVisibleIndexRange(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
               : computeVisibleIndexRange(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
@@ -412,7 +417,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               const dx = columnVector.x * col + rowVector.x * row;
               const dy = columnVector.y * col + rowVector.y * row;
               const instBBox = translateBBox(baseInstBBox, dx, dy);
-              if (!useAxisRanges && !intersects(instBBox, localVisibleBBox)) continue;
+              if (!canUseOptimizedRanges && !intersects(instBBox, localVisibleBBox)) continue;
               const T: GDSTransform = { ...ref.transform, x: ref.transform.x + dx, y: ref.transform.y + dy };
               refsVisible += 1;
               // Apply the GDS transform to the canvas so that cell-local coords map to world coords.
