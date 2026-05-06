@@ -298,15 +298,17 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     return Array.from(layers).sort((a, b) => a - b);
   }, [gdsData]);
 
+  const simplifiedLayerPriority = useMemo(() => [...allLayers].sort((a, b) => b - a), [allLayers]);
+
   useEffect(() => {
     setVisibleLayers(new Set(allLayers));
   }, [allLayers]);
 
   const renderLayers = useMemo(() => {
-    const selected = allLayers.filter((layer) => visibleLayers.has(layer));
+    const selected = (simplifiedActive ? simplifiedLayerPriority : allLayers).filter((layer) => visibleLayers.has(layer));
     if (!simplifiedActive || selected.length <= SIMPLIFIED_MAX_LAYERS) return new Set(selected);
-    return new Set(selected.sort((a, b) => b - a).slice(0, SIMPLIFIED_MAX_LAYERS));
-  }, [allLayers, simplifiedActive, visibleLayers]);
+    return new Set(selected.slice(0, SIMPLIFIED_MAX_LAYERS));
+  }, [allLayers, simplifiedActive, simplifiedLayerPriority, visibleLayers]);
 
   // ResizeObserver is handled by useCanvasViewport
 
@@ -617,10 +619,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           continue;
         }
 
-        rowLoop:
         for (let row = rowStart; row <= rowEnd; row += 1) {
           for (let col = colStart; col <= colEnd; col += 1) {
-            if (refsVisible >= MAX_REFERENCE_BOXES) { refsTruncated = true; break rowLoop; }
+            if (refsVisible >= MAX_REFERENCE_BOXES) { refsTruncated = true; break; }
             const dx = columnVector.x * col + rowVector.x * row;
             const dy = columnVector.y * col + rowVector.y * row;
             const instBBox = translateBBox(baseInstBBox, dx, dy);
@@ -628,6 +629,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
             refsVisible += 1;
             ctx.strokeRect(instBBox.x1, instBBox.y1, bboxWidth(instBBox), bboxHeight(instBBox));
           }
+          if (refsTruncated) break;
         }
         if (refsTruncated) break;
       }
