@@ -13,9 +13,13 @@ interface GDSViewerProps {
 const MAX_FLATTENED_SHAPES = 250_000;
 const FLATTEN_WARN_SHAPES = 50_000;
 const MAX_REFERENCE_BOXES = 75_000;
+/** Switch Auto detail to simplified rendering below this screen scale, or whenever dragging. */
 const DETAIL_SCALE_THRESHOLD_PX_PER_UM = 18;
+/** Draw only the highest numbered visible layers in simplified mode; these are usually top routing/outline layers. */
 const SIMPLIFIED_MAX_LAYERS = 8;
+/** Draw one aggregate array bbox instead of many instance bboxes above this visible instance count. */
 const SIMPLIFIED_ARRAY_AGGREGATE_INSTANCES = 1_500;
+/** Cull individual primitives smaller than this many screen pixels in simplified mode. */
 const SIMPLIFIED_SHAPE_SKIP_PX = 0.45;
 /** Maximum GDS hierarchy depth the hierarchy renderer will descend before stopping. */
 const MAX_HIERARCHY_DEPTH = 32;
@@ -49,6 +53,15 @@ const layerColor = (layer: number): string => {
 };
 
 type Axis = 'x' | 'y';
+
+interface VisibleArrayInstances {
+  arrayBBox: GDSBBox;
+  colStart: number;
+  colEnd: number;
+  rowStart: number;
+  rowEnd: number;
+  axisAlignedGridAxes: { columnAxis: Axis; rowAxis: Axis } | null;
+}
 
 const bboxWidth = (bbox: GDSBBox) => Math.max(1e-9, bbox.x2 - bbox.x1);
 const bboxHeight = (bbox: GDSBBox) => Math.max(1e-9, bbox.y2 - bbox.y1);
@@ -104,6 +117,38 @@ const getAxisAlignedGridAxes = (columnVector: { x: number; y: number }, rowVecto
   if (isAxisAlignedStep(columnVector, 'x') && isAxisAlignedStep(rowVector, 'y')) return { columnAxis: 'x', rowAxis: 'y' };
   if (isAxisAlignedStep(columnVector, 'y') && isAxisAlignedStep(rowVector, 'x')) return { columnAxis: 'y', rowAxis: 'x' };
   return null;
+};
+
+const getVisibleArrayInstances = (
+  baseInstBBox: GDSBBox,
+  columnVector: { x: number; y: number },
+  rowVector: { x: number; y: number },
+  columns: number,
+  rows: number,
+  visibleBBox: GDSBBox,
+): VisibleArrayInstances | null => {
+  const arrayBBox = translatedArrayBBox(baseInstBBox, columnVector, rowVector, columns, rows);
+  if (!intersects(arrayBBox, visibleBBox)) return null;
+
+  let colStart = 0;
+  let colEnd = columns - 1;
+  let rowStart = 0;
+  let rowEnd = rows - 1;
+  const axisAlignedGridAxes = getAxisAlignedGridAxes(columnVector, rowVector);
+
+  if (axisAlignedGridAxes) {
+    const colRange = axisAlignedGridAxes.columnAxis === 'x'
+      ? computeVisibleIndexRange(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, visibleBBox.x1, visibleBBox.x2)
+      : computeVisibleIndexRange(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, visibleBBox.y1, visibleBBox.y2);
+    const rowRange = axisAlignedGridAxes.rowAxis === 'x'
+      ? computeVisibleIndexRange(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, visibleBBox.x1, visibleBBox.x2)
+      : computeVisibleIndexRange(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, visibleBBox.y1, visibleBBox.y2);
+    if (!colRange || !rowRange) return null;
+    [colStart, colEnd] = colRange;
+    [rowStart, rowEnd] = rowRange;
+  }
+
+  return { arrayBBox, colStart, colEnd, rowStart, rowEnd, axisAlignedGridAxes };
 };
 
 /**
@@ -422,26 +467,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           const columnVector = ref.columnVector ?? { x: 0, y: 0 };
           const rowVector = ref.rowVector ?? { x: 0, y: 0 };
           const baseInstBBox = transformBBox(target.bbox, ref.transform);
-          const arrayBBox = translatedArrayBBox(baseInstBBox, columnVector, rowVector, columns, rows);
-          if (!intersects(arrayBBox, localVisibleBBox)) continue;
-
-          let colStart = 0;
-          let colEnd = columns - 1;
-          let rowStart = 0;
-          let rowEnd = rows - 1;
-          const axisAlignedGridAxes = getAxisAlignedGridAxes(columnVector, rowVector);
-
-          if (axisAlignedGridAxes) {
-            const colRange = axisAlignedGridAxes.columnAxis === 'x'
-              ? computeVisibleIndexRange(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
-              : computeVisibleIndexRange(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
-            const rowRange = axisAlignedGridAxes.rowAxis === 'x'
-              ? computeVisibleIndexRange(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
-              : computeVisibleIndexRange(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
-            if (!colRange || !rowRange) continue;
-            [colStart, colEnd] = colRange;
-            [rowStart, rowEnd] = rowRange;
-          }
+          const visibleArray = getVisibleArrayInstances(baseInstBBox, columnVector, rowVector, columns, rows, localVisibleBBox);
+          if (!visibleArray) continue;
+          const { arrayBBox, colStart, colEnd, rowStart, rowEnd, axisAlignedGridAxes } = visibleArray;
 
           if (simplifiedActive) {
             const visibleInstanceCount = (colEnd - colStart + 1) * (rowEnd - rowStart + 1);
@@ -564,25 +592,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
         const columnVector = ref.columnVector ?? { x: 0, y: 0 };
         const rowVector = ref.rowVector ?? { x: 0, y: 0 };
         const baseInstBBox = transformBBox(target.bbox, ref.transform);
-        const arrayBBox = translatedArrayBBox(baseInstBBox, columnVector, rowVector, columns, rows);
-        if (!intersects(arrayBBox, visibleBBox)) continue;
-
-        let colStart = 0;
-        let colEnd = columns - 1;
-        let rowStart = 0;
-        let rowEnd = rows - 1;
-        const axisAlignedGridAxes = getAxisAlignedGridAxes(columnVector, rowVector);
-        if (axisAlignedGridAxes) {
-          const colRange = axisAlignedGridAxes.columnAxis === 'x'
-            ? computeVisibleIndexRange(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, visibleBBox.x1, visibleBBox.x2)
-            : computeVisibleIndexRange(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, visibleBBox.y1, visibleBBox.y2);
-          const rowRange = axisAlignedGridAxes.rowAxis === 'x'
-            ? computeVisibleIndexRange(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, visibleBBox.x1, visibleBBox.x2)
-            : computeVisibleIndexRange(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, visibleBBox.y1, visibleBBox.y2);
-          if (!colRange || !rowRange) continue;
-          [colStart, colEnd] = colRange;
-          [rowStart, rowEnd] = rowRange;
-        }
+        const visibleArray = getVisibleArrayInstances(baseInstBBox, columnVector, rowVector, columns, rows, visibleBBox);
+        if (!visibleArray) continue;
+        const { arrayBBox, colStart, colEnd, rowStart, rowEnd, axisAlignedGridAxes } = visibleArray;
 
         const visibleInstanceCount = (colEnd - colStart + 1) * (rowEnd - rowStart + 1);
         if (visibleInstanceCount > SIMPLIFIED_ARRAY_AGGREGATE_INSTANCES) {
@@ -591,9 +603,10 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           continue;
         }
 
+        referenceBoxes:
         for (let row = rowStart; row <= rowEnd; row += 1) {
           for (let col = colStart; col <= colEnd; col += 1) {
-            if (refsVisible >= MAX_REFERENCE_BOXES) { refsTruncated = true; break; }
+            if (refsVisible >= MAX_REFERENCE_BOXES) { refsTruncated = true; break referenceBoxes; }
             const dx = columnVector.x * col + rowVector.x * row;
             const dy = columnVector.y * col + rowVector.y * row;
             const instBBox = translateBBox(baseInstBBox, dx, dy);
@@ -601,7 +614,6 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
             refsVisible += 1;
             ctx.strokeRect(instBBox.x1, instBBox.y1, bboxWidth(instBBox), bboxHeight(instBBox));
           }
-          if (refsTruncated) break;
         }
         if (refsTruncated) break;
       }
