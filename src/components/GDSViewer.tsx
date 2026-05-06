@@ -34,15 +34,15 @@ const LOD_BBOX_PX = 8;
 const LOD_BBOX_ALPHA = 0.45;
 const LOD_BBOX_COLOR = '#888';
 
-const _layerColorCache = new Map<number, string>();
+const layerColorCache = new Map<number, string>();
 const layerColor = (layer: number): string => {
-  const cached = _layerColorCache.get(layer);
+  const cached = layerColorCache.get(layer);
   if (cached !== undefined) return cached;
   const hues = [45, 95, 320, 205, 50, 25, 265, 185, 0, 150, 285, 15];
   const hue = hues[Math.abs(layer) % hues.length];
   const light = 48 + ((Math.abs(layer) * 7) % 18);
   const color = `hsl(${hue} 64% ${light}%)`;
-  _layerColorCache.set(layer, color);
+  layerColorCache.set(layer, color);
   return color;
 };
 
@@ -476,8 +476,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               if (instScreenPx < LOD_BBOX_PX) {
                 // Instance is very small; draw a simple bbox outline instead of recursing.
                 lodSimplified += 1;
-                if (LOD_BBOX_ALPHA !== curGlobalAlpha) { ctx.globalAlpha = LOD_BBOX_ALPHA; curGlobalAlpha = LOD_BBOX_ALPHA; }
-                if (LOD_BBOX_COLOR !== curStrokeStyle) { ctx.strokeStyle = LOD_BBOX_COLOR; curStrokeStyle = LOD_BBOX_COLOR; }
+                setStroke(LOD_BBOX_COLOR, LOD_BBOX_ALPHA);
                 ctx.lineWidth = 1 / effectiveScale;
                 ctx.strokeRect(instBBox.x1, instBBox.y1, instBBox.x2 - instBBox.x1, instBBox.y2 - instBBox.y1);
                 continue;
@@ -498,9 +497,10 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                   x2: localVisibleBBox.x2 - tx,
                   y2: localVisibleBBox.y2 - ty,
                 };
-                resetCtxState();
                 drawCellRecursive(target, depth + 1, childLocalBBox, effectiveScale);
                 ctx.restore();
+                // After restore the canvas state reverts to its pre-save values,
+                // so invalidate our tracking so the next shape forces a re-apply.
                 resetCtxState();
               } else {
                 const T: GDSTransform = { ...ref.transform, x: tx, y: ty };
@@ -520,7 +520,6 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 );
                 // Compute the visible bbox in the target cell's local coordinate system for culling.
                 const childLocalBBox = inverseTransformBBox(localVisibleBBox, T);
-                resetCtxState();
                 // Accumulate magnification so path stroke widths are correct at this depth.
                 drawCellRecursive(target, depth + 1, childLocalBBox, effectiveScale * m);
                 ctx.restore();
