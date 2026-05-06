@@ -31,6 +31,8 @@ const layerColor = (layer: number): string => {
   return `hsl(${hue} 64% ${light}%)`;
 };
 
+type Axis = 'x' | 'y';
+
 const bboxWidth = (bbox: GDSBBox) => Math.max(1e-9, bbox.x2 - bbox.x1);
 const bboxHeight = (bbox: GDSBBox) => Math.max(1e-9, bbox.y2 - bbox.y1);
 
@@ -51,7 +53,7 @@ const expandBBoxWith = (bbox: GDSBBox, other: GDSBBox): void => {
   bbox.y2 = Math.max(bbox.y2, other.y2);
 };
 
-/** Compute an array's bbox from the four corner instance translations. */
+/** Compute an array's bbox from the four corner instance translations; linear translation grids reach axis extrema at corners. */
 const translatedArrayBBox = (instanceBBox: GDSBBox, columnVector: { x: number; y: number }, rowVector: { x: number; y: number }, columns: number, rows: number): GDSBBox => {
   const bbox = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
   for (const [col, row] of [[0, 0], [columns - 1, 0], [0, rows - 1], [columns - 1, rows - 1]] as [number, number][]) {
@@ -62,24 +64,30 @@ const translatedArrayBBox = (instanceBBox: GDSBBox, columnVector: { x: number; y
 
 /**
  * Compute the inclusive index range whose translated instance interval can intersect the viewport.
- * `step` is the array spacing on one axis, `instanceMin/Max` are the single-instance bbox
+ * `step` is the array spacing on one axis, `instanceAxisMin/Max` are the single-instance bbox
  * extents on that axis, and `viewportMin/Max` are the visible region extents on the same axis.
  */
-const computeVisibleIndexRange = (count: number, step: number, instanceMin: number, instanceMax: number, viewportMin: number, viewportMax: number): [number, number] | null => {
+const computeVisibleIndexRange = (count: number, step: number, instanceAxisMin: number, instanceAxisMax: number, viewportMin: number, viewportMax: number): [number, number] | null => {
   if (count <= 0) return null;
-  if (Math.abs(step) < AXIS_EPSILON) return instanceMax >= viewportMin && instanceMin <= viewportMax ? [0, count - 1] : null;
-  const minRaw = step > 0 ? (viewportMin - instanceMax) / step : (viewportMax - instanceMin) / step;
-  const maxRaw = step > 0 ? (viewportMax - instanceMin) / step : (viewportMin - instanceMax) / step;
+  if (Math.abs(step) < AXIS_EPSILON) return instanceAxisMax >= viewportMin && instanceAxisMin <= viewportMax ? [0, count - 1] : null;
+  const minRaw = step > 0 ? (viewportMin - instanceAxisMax) / step : (viewportMax - instanceAxisMin) / step;
+  const maxRaw = step > 0 ? (viewportMax - instanceAxisMin) / step : (viewportMin - instanceAxisMax) / step;
   const start = Math.max(0, Math.ceil(minRaw));
   const end = Math.min(count - 1, Math.floor(maxRaw));
   return start <= end ? [start, end] : null;
 };
 
 /** Return whether a non-zero vector is aligned with the given axis within AXIS_EPSILON tolerance. */
-const isNonZeroAxisAlignedStep = (vector: { x: number; y: number }, axis: 'x' | 'y'): boolean =>
+const isAxisAlignedStep = (vector: { x: number; y: number }, axis: Axis): boolean =>
   axis === 'x'
     ? Math.abs(vector.x) >= AXIS_EPSILON && Math.abs(vector.y) < AXIS_EPSILON
     : Math.abs(vector.y) >= AXIS_EPSILON && Math.abs(vector.x) < AXIS_EPSILON;
+
+const getAxisAlignedGridAxes = (columnVector: { x: number; y: number }, rowVector: { x: number; y: number }): { columnAxis: Axis; rowAxis: Axis } | null => {
+  if (isAxisAlignedStep(columnVector, 'x') && isAxisAlignedStep(rowVector, 'y')) return { columnAxis: 'x', rowAxis: 'y' };
+  if (isAxisAlignedStep(columnVector, 'y') && isAxisAlignedStep(rowVector, 'x')) return { columnAxis: 'y', rowAxis: 'x' };
+  return null;
+};
 
 /**
  * Compute the bounding box of the pre-image of worldBBox under the given GDS transform.
@@ -394,17 +402,14 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           let colEnd = columns - 1;
           let rowStart = 0;
           let rowEnd = rows - 1;
-          const columnsMoveX = isNonZeroAxisAlignedStep(columnVector, 'x');
-          const columnsMoveY = isNonZeroAxisAlignedStep(columnVector, 'y');
-          const rowsMoveX = isNonZeroAxisAlignedStep(rowVector, 'x');
-          const rowsMoveY = isNonZeroAxisAlignedStep(rowVector, 'y');
-          const canUseOptimizedRanges = (columnsMoveX && rowsMoveY) || (columnsMoveY && rowsMoveX);
+          const axisAlignedGridAxes = getAxisAlignedGridAxes(columnVector, rowVector);
+          const canUseOptimizedRanges = axisAlignedGridAxes !== null;
 
-          if (canUseOptimizedRanges) {
-            const colRange = columnsMoveX
+          if (axisAlignedGridAxes) {
+            const colRange = axisAlignedGridAxes.columnAxis === 'x'
               ? computeVisibleIndexRange(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
               : computeVisibleIndexRange(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
-            const rowRange = rowsMoveX
+            const rowRange = axisAlignedGridAxes.rowAxis === 'x'
               ? computeVisibleIndexRange(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
               : computeVisibleIndexRange(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
             if (!colRange || !rowRange) continue;
