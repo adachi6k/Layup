@@ -39,8 +39,9 @@ const LOD_BBOX_COLOR = '#888';
  * the user is warned to zoom in or hide some layers.
  */
 const DRAW_BUDGET_MS = 50;
-/** Check elapsed time after this many shapes to limit performance.now() call overhead. */
-const DRAW_BUDGET_CHECK_INTERVAL = 512;
+/** Check elapsed time after this many shapes to limit performance.now() call overhead.
+ * Must be a power of 2 so the bitwise-AND modulo in checkBudget() is correct. */
+const DRAW_BUDGET_CHECK_INTERVAL = 512; // 2^9
 
 const layerColorCache = new Map<number, string>();
 const layerColor = (layer: number): string => {
@@ -224,6 +225,8 @@ const collectReferenceBoxes = (cell: GDSCell, data: GDSData): { boxes: RefBox[];
   }
   return { boxes, truncated };
 };
+
+const DRAW_BUDGET_MSG = 'Too many visible objects — drawing cut short. Zoom in or hide some layers to see full detail.';
 
 export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   const { containerRef, canvasRef, containerSize, zoom, setZoom, pan, setPan, isPanning, startPan, updatePan, endPan } = useCanvasViewport();
@@ -740,7 +743,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               )}
               {renderStats.budgetExceeded && (
                 <div className="text-danger small mt-1">
-                  Too many visible objects — drawing cut short. Zoom in or hide some layers to see full detail.
+                  {DRAW_BUDGET_MSG}
                 </div>
               )}
               <hr />
@@ -782,7 +785,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 <canvas ref={canvasRef} className="canvas-overlay-abs" />
                 {renderStats.budgetExceeded && (
                   <div className="position-absolute top-0 start-0 end-0 m-2 small text-center bg-warning bg-opacity-90 border border-warning rounded px-2 py-1 fw-semibold" style={{ pointerEvents: 'none' }}>
-                    ⚠ Too many visible objects — drawing cut short. Zoom in or hide some layers to see full detail.
+                    ⚠ {DRAW_BUDGET_MSG}
                   </div>
                 )}
                 {(import.meta.env.DEV || cursor) && (
