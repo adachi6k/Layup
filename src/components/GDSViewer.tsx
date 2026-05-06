@@ -51,6 +51,7 @@ const expandBBoxWith = (bbox: GDSBBox, other: GDSBBox): void => {
   bbox.y2 = Math.max(bbox.y2, other.y2);
 };
 
+/** Compute an array's bbox from the four corner instance translations. */
 const translatedArrayBBox = (instanceBBox: GDSBBox, columnVector: { x: number; y: number }, rowVector: { x: number; y: number }, columns: number, rows: number): GDSBBox => {
   const bbox = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
   for (const [col, row] of [[0, 0], [columns - 1, 0], [0, rows - 1], [columns - 1, rows - 1]] as [number, number][]) {
@@ -59,7 +60,7 @@ const translatedArrayBBox = (instanceBBox: GDSBBox, columnVector: { x: number; y
   return bbox;
 };
 
-const visibleIndexRangeForTranslatedInterval = (count: number, step: number, instanceMin: number, instanceMax: number, viewportMin: number, viewportMax: number): [number, number] | null => {
+const computeVisibleIndexRange = (count: number, step: number, instanceMin: number, instanceMax: number, viewportMin: number, viewportMax: number): [number, number] | null => {
   if (count <= 0) return null;
   if (Math.abs(step) < AXIS_EPSILON) return instanceMax >= viewportMin && instanceMin <= viewportMax ? [0, count - 1] : null;
   const minRaw = step > 0 ? (viewportMin - instanceMax) / step : (viewportMax - instanceMin) / step;
@@ -69,6 +70,7 @@ const visibleIndexRangeForTranslatedInterval = (count: number, step: number, ins
   return start <= end ? [start, end] : null;
 };
 
+/** Return whether a vector moves only along the given axis within AXIS_EPSILON tolerance. */
 const movesAlongAxis = (vector: { x: number; y: number }, axis: 'x' | 'y'): boolean =>
   axis === 'x'
     ? Math.abs(vector.x) >= AXIS_EPSILON && Math.abs(vector.y) < AXIS_EPSILON
@@ -395,11 +397,11 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
 
           if (useAxisRanges) {
             const colRange = columnsMoveX
-              ? visibleIndexRangeForTranslatedInterval(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
-              : visibleIndexRangeForTranslatedInterval(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
+              ? computeVisibleIndexRange(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
+              : computeVisibleIndexRange(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
             const rowRange = rowsMoveX
-              ? visibleIndexRangeForTranslatedInterval(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
-              : visibleIndexRangeForTranslatedInterval(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
+              ? computeVisibleIndexRange(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
+              : computeVisibleIndexRange(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
             if (!colRange || !rowRange) continue;
             [colStart, colEnd] = colRange;
             [rowStart, rowEnd] = rowRange;
