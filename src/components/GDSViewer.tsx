@@ -13,7 +13,7 @@ interface GDSViewerProps {
 const MAX_FLATTENED_SHAPES = 250_000;
 const FLATTEN_WARN_SHAPES = 50_000;
 const MAX_REFERENCE_BOXES = 75_000;
-/** Switch Auto detail to simplified rendering below this screen scale, or whenever dragging; 18 px/um keeps overview pans responsive before fine geometry is legible. */
+/** Switch Auto detail to simplified rendering below this screen scale, or whenever panning; 18 px/um keeps overview pans responsive before fine geometry is legible. */
 const DETAIL_SCALE_THRESHOLD_PX_PER_UM = 18;
 /** Draw only the highest numbered visible layers in simplified mode; this pairs with bbox rendering to create a progressive overview before full detail. */
 const SIMPLIFIED_MAX_LAYERS = 8;
@@ -282,7 +282,11 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   const selectedCell = gdsData.cellMap.get(selectedCellName) ?? gdsData.cellMap.get(gdsData.topCellName) ?? gdsData.cells[0];
   const selectedBBox = selectedCell?.bbox ?? gdsData.bbox;
   const absScale = baseScale * zoom;
-  const simplifiedActive = detailMode === 'simplified' || (detailMode === 'auto' && (isPanning || absScale < DETAIL_SCALE_THRESHOLD_PX_PER_UM));
+  const simplifiedActive = useMemo(() => {
+    if (detailMode === 'simplified') return true;
+    if (detailMode === 'full') return false;
+    return isPanning || absScale < DETAIL_SCALE_THRESHOLD_PX_PER_UM;
+  }, [absScale, detailMode, isPanning]);
 
   const allLayers = useMemo(() => {
     const layers = new Set<number>();
@@ -613,10 +617,10 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           continue;
         }
 
-        instanceLoop:
+        rowLoop:
         for (let row = rowStart; row <= rowEnd; row += 1) {
           for (let col = colStart; col <= colEnd; col += 1) {
-            if (refsVisible >= MAX_REFERENCE_BOXES) { refsTruncated = true; break instanceLoop; }
+            if (refsVisible >= MAX_REFERENCE_BOXES) { refsTruncated = true; break rowLoop; }
             const dx = columnVector.x * col + rowVector.x * row;
             const dy = columnVector.y * col + rowVector.y * row;
             const instBBox = translateBBox(baseInstBBox, dx, dy);
