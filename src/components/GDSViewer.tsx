@@ -31,6 +31,8 @@ const AXIS_EPSILON = 1e-12;
  */
 const LOD_SKIP_PX = 1;
 const LOD_BBOX_PX = 4;
+const LOD_BBOX_ALPHA = 0.45;
+const LOD_BBOX_COLOR = '#888';
 
 const layerColor = (layer: number): string => {
   const hues = [45, 95, 320, 205, 50, 25, 265, 185, 0, 150, 285, 15];
@@ -435,8 +437,8 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
 
               // LOD: measure the instance's longest screen-space dimension to decide detail level.
               const instScreenPx = effectiveScale * Math.max(
-                Math.abs(instBBox.x2 - instBBox.x1),
-                Math.abs(instBBox.y2 - instBBox.y1),
+                instBBox.x2 - instBBox.x1,
+                instBBox.y2 - instBBox.y1,
               );
               if (instScreenPx < LOD_SKIP_PX) {
                 // Instance is sub-pixel; skip entirely to avoid unnecessary work.
@@ -446,8 +448,8 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               if (instScreenPx < LOD_BBOX_PX) {
                 // Instance is very small; draw a simple bbox outline instead of recursing.
                 lodSimplified += 1;
-                ctx.globalAlpha = 0.45;
-                ctx.strokeStyle = '#888';
+                ctx.globalAlpha = LOD_BBOX_ALPHA;
+                ctx.strokeStyle = LOD_BBOX_COLOR;
                 ctx.lineWidth = 1 / effectiveScale;
                 ctx.strokeRect(instBBox.x1, instBBox.y1, instBBox.x2 - instBBox.x1, instBBox.y2 - instBBox.y1);
                 continue;
