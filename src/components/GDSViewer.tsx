@@ -36,6 +36,39 @@ const bboxHeight = (bbox: GDSBBox) => Math.max(1e-9, bbox.y2 - bbox.y1);
 const intersects = (a: GDSBBox, b: GDSBBox): boolean =>
   a.x2 >= b.x1 && a.x1 <= b.x2 && a.y2 >= b.y1 && a.y1 <= b.y2;
 
+const translateBBox = (bbox: GDSBBox, dx: number, dy: number): GDSBBox => ({
+  x1: bbox.x1 + dx,
+  y1: bbox.y1 + dy,
+  x2: bbox.x2 + dx,
+  y2: bbox.y2 + dy,
+});
+
+const expandBBoxWith = (bbox: GDSBBox, other: GDSBBox): void => {
+  bbox.x1 = Math.min(bbox.x1, other.x1);
+  bbox.y1 = Math.min(bbox.y1, other.y1);
+  bbox.x2 = Math.max(bbox.x2, other.x2);
+  bbox.y2 = Math.max(bbox.y2, other.y2);
+};
+
+const translatedArrayBBox = (instanceBBox: GDSBBox, columnVector: { x: number; y: number }, rowVector: { x: number; y: number }, columns: number, rows: number): GDSBBox => {
+  const bbox = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+  for (const [col, row] of [[0, 0], [columns - 1, 0], [0, rows - 1], [columns - 1, rows - 1]] as [number, number][]) {
+    expandBBoxWith(bbox, translateBBox(instanceBBox, columnVector.x * col + rowVector.x * row, columnVector.y * col + rowVector.y * row));
+  }
+  return bbox;
+};
+
+const indexRangeForTranslatedInterval = (count: number, step: number, baseMin: number, baseMax: number, viewMin: number, viewMax: number): [number, number] | null => {
+  const EPS = 1e-12;
+  if (count <= 0) return null;
+  if (Math.abs(step) < EPS) return baseMax >= viewMin && baseMin <= viewMax ? [0, count - 1] : null;
+  const minRaw = step > 0 ? (viewMin - baseMax) / step : (viewMax - baseMin) / step;
+  const maxRaw = step > 0 ? (viewMax - baseMin) / step : (viewMin - baseMax) / step;
+  const start = Math.max(0, Math.ceil(minRaw));
+  const end = Math.min(count - 1, Math.floor(maxRaw));
+  return start <= end ? [start, end] : null;
+};
+
 /**
  * Compute the bounding box of the pre-image of worldBBox under the given GDS transform.
  * This gives the region in local (cell) coordinates that maps into worldBBox, and is
@@ -339,14 +372,42 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           if (!target?.bbox) continue;
           const columns = ref.columns ?? 1;
           const rows = ref.rows ?? 1;
-          for (let row = 0; row < rows; row += 1) {
-            for (let col = 0; col < columns; col += 1) {
-              const dx = (ref.columnVector?.x ?? 0) * col + (ref.rowVector?.x ?? 0) * row;
-              const dy = (ref.columnVector?.y ?? 0) * col + (ref.rowVector?.y ?? 0) * row;
+          const columnVector = ref.columnVector ?? { x: 0, y: 0 };
+          const rowVector = ref.rowVector ?? { x: 0, y: 0 };
+          const baseInstBBox = transformBBox(target.bbox, ref.transform);
+          const arrayBBox = translatedArrayBBox(baseInstBBox, columnVector, rowVector, columns, rows);
+          if (!intersects(arrayBBox, localVisibleBBox)) continue;
+
+          let colStart = 0;
+          let colEnd = columns - 1;
+          let rowStart = 0;
+          let rowEnd = rows - 1;
+          const axisEps = 1e-12;
+          const columnsMoveX = Math.abs(columnVector.x) >= axisEps && Math.abs(columnVector.y) < axisEps;
+          const columnsMoveY = Math.abs(columnVector.y) >= axisEps && Math.abs(columnVector.x) < axisEps;
+          const rowsMoveX = Math.abs(rowVector.x) >= axisEps && Math.abs(rowVector.y) < axisEps;
+          const rowsMoveY = Math.abs(rowVector.y) >= axisEps && Math.abs(rowVector.x) < axisEps;
+          const useAxisRanges = (columnsMoveX && rowsMoveY) || (columnsMoveY && rowsMoveX);
+
+          if (useAxisRanges) {
+            const colRange = columnsMoveX
+              ? indexRangeForTranslatedInterval(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
+              : indexRangeForTranslatedInterval(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
+            const rowRange = rowsMoveX
+              ? indexRangeForTranslatedInterval(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
+              : indexRangeForTranslatedInterval(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
+            if (!colRange || !rowRange) continue;
+            [colStart, colEnd] = colRange;
+            [rowStart, rowEnd] = rowRange;
+          }
+
+          for (let row = rowStart; row <= rowEnd; row += 1) {
+            for (let col = colStart; col <= colEnd; col += 1) {
+              const dx = columnVector.x * col + rowVector.x * row;
+              const dy = columnVector.y * col + rowVector.y * row;
+              const instBBox = translateBBox(baseInstBBox, dx, dy);
+              if (!useAxisRanges && !intersects(instBBox, localVisibleBBox)) continue;
               const T: GDSTransform = { ...ref.transform, x: ref.transform.x + dx, y: ref.transform.y + dy };
-              // Cell-level bbox culling: skip if the instance's world bbox doesn't intersect viewport.
-              const instBBox = transformBBox(target.bbox, T);
-              if (!intersects(instBBox, localVisibleBBox)) continue;
               refsVisible += 1;
               // Apply the GDS transform to the canvas so that cell-local coords map to world coords.
               const rad = (T.angle * Math.PI) / 180;
