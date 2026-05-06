@@ -30,15 +30,20 @@ const AXIS_EPSILON = 1e-12;
  * Below LOD_BBOX_PX the instance is drawn as a bbox outline instead of recursing into geometry.
  */
 const LOD_SKIP_PX = 1;
-const LOD_BBOX_PX = 4;
+const LOD_BBOX_PX = 8;
 const LOD_BBOX_ALPHA = 0.45;
 const LOD_BBOX_COLOR = '#888';
 
+const _layerColorCache = new Map<number, string>();
 const layerColor = (layer: number): string => {
+  const cached = _layerColorCache.get(layer);
+  if (cached !== undefined) return cached;
   const hues = [45, 95, 320, 205, 50, 25, 265, 185, 0, 150, 285, 15];
   const hue = hues[Math.abs(layer) % hues.length];
   const light = 48 + ((Math.abs(layer) * 7) % 18);
-  return `hsl(${hue} 64% ${light}%)`;
+  const color = `hsl(${hue} 64% ${light}%)`;
+  _layerColorCache.set(layer, color);
+  return color;
 };
 
 type Axis = 'x' | 'y';
@@ -231,10 +236,15 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   const renderStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, lodCulled: 0, lodSimplified: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
 
+  // rAF handle: cancel any pending frame before scheduling a new one so rapid state
+  // updates (e.g. every mousemove during panning) only produce one draw per display frame.
+  const rafIdRef = useRef<number | null>(null);
+
   // Clean up throttle timers on unmount.
   useEffect(() => () => {
     if (cursorTimerRef.current) clearTimeout(cursorTimerRef.current);
     if (renderStatsTimerRef.current) clearTimeout(renderStatsTimerRef.current);
+    if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current);
   }, []);
 
   const selectedCell = gdsData.cellMap.get(selectedCellName) ?? gdsData.cellMap.get(gdsData.topCellName) ?? gdsData.cells[0];
@@ -341,22 +351,36 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     let lodSimplified = 0;
     let depthLimitHit = false;
 
+    // Canvas state tracking: avoid redundant style/alpha assignments, which are
+    // surprisingly expensive in browsers (they force style-parsing or attribute sync).
+    // After any ctx.restore() these must be reset to '' / -1 so the next draw re-applies.
+    let curFillStyle = '';
+    let curStrokeStyle = '';
+    let curGlobalAlpha = -1;
+    const setFill = (style: string, alpha: number) => {
+      if (alpha !== curGlobalAlpha) { ctx.globalAlpha = alpha; curGlobalAlpha = alpha; }
+      if (style !== curFillStyle) { ctx.fillStyle = style; curFillStyle = style; }
+    };
+    const setStroke = (style: string, alpha: number) => {
+      if (alpha !== curGlobalAlpha) { ctx.globalAlpha = alpha; curGlobalAlpha = alpha; }
+      if (style !== curStrokeStyle) { ctx.strokeStyle = style; curStrokeStyle = style; }
+    };
+    const resetCtxState = () => { curFillStyle = ''; curStrokeStyle = ''; curGlobalAlpha = -1; };
+
     if (flattenRefs && flattened) {
       // Flatten mode: draw pre-flattened polygons and paths directly (all in world coords).
       for (const polygon of flattened.polygons) {
         if (!visibleLayers.has(polygon.layer)) continue;
         if (!intersects(polygon.bbox, visibleBBox)) { culled += 1; continue; }
         visible += 1;
-        ctx.globalAlpha = 0.68;
-        ctx.fillStyle = layerColor(polygon.layer);
+        setFill(layerColor(polygon.layer), 0.68);
         renderPolygon(ctx, polygon);
       }
       for (const path of flattened.paths) {
         if (!visibleLayers.has(path.layer)) continue;
         if (!intersects(path.bbox, visibleBBox)) { culled += 1; continue; }
         visible += 1;
-        ctx.globalAlpha = 0.8;
-        ctx.strokeStyle = layerColor(path.layer);
+        setStroke(layerColor(path.layer), 0.8);
         renderPath(ctx, path, absScale);
       }
     } else if (selectedCell) {
@@ -369,12 +393,11 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
         if (depth > MAX_HIERARCHY_DEPTH) { depthLimitHit = true; return; }
 
         // Draw rects
-        ctx.globalAlpha = 0.68;
         for (const rect of cell.rects) {
           if (!visibleLayers.has(rect.layer)) continue;
           if (!intersects(rect, localVisibleBBox)) { culled += 1; continue; }
           visible += 1;
-          ctx.fillStyle = layerColor(rect.layer);
+          setFill(layerColor(rect.layer), 0.68);
           renderRect(ctx, rect);
         }
 
@@ -383,18 +406,17 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           if (!visibleLayers.has(polygon.layer)) continue;
           if (!intersects(polygon.bbox, localVisibleBBox)) { culled += 1; continue; }
           visible += 1;
-          ctx.fillStyle = layerColor(polygon.layer);
+          setFill(layerColor(polygon.layer), 0.68);
           renderPolygon(ctx, polygon);
         }
 
         // Draw paths — use effectiveScale so the 1px minimum stroke is correct at this
         // depth even when the canvas has accumulated magnification from parent transforms.
-        ctx.globalAlpha = 0.8;
         for (const path of cell.paths) {
           if (!visibleLayers.has(path.layer)) continue;
           if (!intersects(path.bbox, localVisibleBBox)) { culled += 1; continue; }
           visible += 1;
-          ctx.strokeStyle = layerColor(path.layer);
+          setStroke(layerColor(path.layer), 0.8);
           renderPath(ctx, path, effectiveScale);
         }
 
@@ -428,6 +450,12 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
             [rowStart, rowEnd] = rowRange;
           }
 
+          // Fast path: translation-only transform (angle=0, mag=1, no reflect).
+          // Skip cos/sin computation and full matrix save; use a simple ctx.translate instead,
+          // and compute the child-local bbox with a plain offset rather than inverseTransformBBox.
+          const isSimpleTranslation =
+            ref.transform.angle === 0 && ref.transform.mag === 1 && !ref.transform.reflect;
+
           for (let row = rowStart; row <= rowEnd; row += 1) {
             for (let col = colStart; col <= colEnd; col += 1) {
               const dx = columnVector.x * col + rowVector.x * row;
@@ -448,34 +476,56 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               if (instScreenPx < LOD_BBOX_PX) {
                 // Instance is very small; draw a simple bbox outline instead of recursing.
                 lodSimplified += 1;
-                ctx.globalAlpha = LOD_BBOX_ALPHA;
-                ctx.strokeStyle = LOD_BBOX_COLOR;
+                if (LOD_BBOX_ALPHA !== curGlobalAlpha) { ctx.globalAlpha = LOD_BBOX_ALPHA; curGlobalAlpha = LOD_BBOX_ALPHA; }
+                if (LOD_BBOX_COLOR !== curStrokeStyle) { ctx.strokeStyle = LOD_BBOX_COLOR; curStrokeStyle = LOD_BBOX_COLOR; }
                 ctx.lineWidth = 1 / effectiveScale;
                 ctx.strokeRect(instBBox.x1, instBBox.y1, instBBox.x2 - instBBox.x1, instBBox.y2 - instBBox.y1);
                 continue;
               }
 
-              const T: GDSTransform = { ...ref.transform, x: ref.transform.x + dx, y: ref.transform.y + dy };
               refsVisible += 1;
-              // Apply the GDS transform to the canvas so that cell-local coords map to world coords.
-              const rad = (T.angle * Math.PI) / 180;
-              const cosA = Math.cos(rad);
-              const sinA = Math.sin(rad);
-              const m = T.mag;
-              ctx.save();
-              ctx.transform(
-                cosA * m,
-                sinA * m,
-                T.reflect ? sinA * m : -sinA * m,
-                T.reflect ? -cosA * m : cosA * m,
-                T.x,
-                T.y,
-              );
-              // Compute the visible bbox in the target cell's local coordinate system for culling.
-              const childLocalBBox = inverseTransformBBox(localVisibleBBox, T);
-              // Accumulate magnification so path stroke widths are correct at this depth.
-              drawCellRecursive(target, depth + 1, childLocalBBox, effectiveScale * m);
-              ctx.restore();
+              const tx = ref.transform.x + dx;
+              const ty = ref.transform.y + dy;
+
+              if (isSimpleTranslation) {
+                // Translation only: avoid trigonometry and full matrix push.
+                ctx.save();
+                ctx.translate(tx, ty);
+                // Inverse of a pure translation is just subtracting the offset.
+                const childLocalBBox: GDSBBox = {
+                  x1: localVisibleBBox.x1 - tx,
+                  y1: localVisibleBBox.y1 - ty,
+                  x2: localVisibleBBox.x2 - tx,
+                  y2: localVisibleBBox.y2 - ty,
+                };
+                resetCtxState();
+                drawCellRecursive(target, depth + 1, childLocalBBox, effectiveScale);
+                ctx.restore();
+                resetCtxState();
+              } else {
+                const T: GDSTransform = { ...ref.transform, x: tx, y: ty };
+                // Apply the GDS transform to the canvas so that cell-local coords map to world coords.
+                const rad = (T.angle * Math.PI) / 180;
+                const cosA = Math.cos(rad);
+                const sinA = Math.sin(rad);
+                const m = T.mag;
+                ctx.save();
+                ctx.transform(
+                  cosA * m,
+                  sinA * m,
+                  T.reflect ? sinA * m : -sinA * m,
+                  T.reflect ? -cosA * m : cosA * m,
+                  tx,
+                  ty,
+                );
+                // Compute the visible bbox in the target cell's local coordinate system for culling.
+                const childLocalBBox = inverseTransformBBox(localVisibleBBox, T);
+                resetCtxState();
+                // Accumulate magnification so path stroke widths are correct at this depth.
+                drawCellRecursive(target, depth + 1, childLocalBBox, effectiveScale * m);
+                ctx.restore();
+                resetCtxState();
+              }
             }
           }
         }
@@ -521,7 +571,19 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   }, [absScale, canvasRef, containerSize.height, containerSize.width, flattened, flattenRefs, gdsData.cellMap, pan.x, pan.y, refBoxResult.truncated, refBoxes, selectedBBox, selectedCell, showRefs, visibleLayers]);
 
   useEffect(() => {
-    draw();
+    // Cancel any pending frame from the previous render so rapid state updates
+    // (e.g. every mousemove during panning) only fire one draw per display frame.
+    if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current);
+    rafIdRef.current = requestAnimationFrame(() => {
+      rafIdRef.current = null;
+      draw();
+    });
+    return () => {
+      if (rafIdRef.current !== null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+    };
   }, [draw]);
 
   const handleWheel = (e: React.WheelEvent) => {
