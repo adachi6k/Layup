@@ -22,6 +22,17 @@ const MAX_REFERENCE_BOXES = 75_000;
 const MAX_HIERARCHY_DEPTH = 32;
 /** Throttle interval (ms) for React state updates driven by frequent events (mousemove, draw). */
 const THROTTLE_MS = 100;
+/** Tolerance for treating array vectors as axis-aligned or zero length. */
+const AXIS_EPSILON = 1e-12;
+/**
+ * LOD (Level of Detail) thresholds based on the instance's longest screen-space dimension.
+ * Below LOD_SKIP_PX the instance is entirely sub-pixel and is culled.
+ * Below LOD_BBOX_PX the instance is drawn as a bbox outline instead of recursing into geometry.
+ */
+const LOD_SKIP_PX = 1;
+const LOD_BBOX_PX = 4;
+const LOD_BBOX_ALPHA = 0.45;
+const LOD_BBOX_COLOR = '#888';
 
 const layerColor = (layer: number): string => {
   const hues = [45, 95, 320, 205, 50, 25, 265, 185, 0, 150, 285, 15];
@@ -30,11 +41,63 @@ const layerColor = (layer: number): string => {
   return `hsl(${hue} 64% ${light}%)`;
 };
 
+type Axis = 'x' | 'y';
+
 const bboxWidth = (bbox: GDSBBox) => Math.max(1e-9, bbox.x2 - bbox.x1);
 const bboxHeight = (bbox: GDSBBox) => Math.max(1e-9, bbox.y2 - bbox.y1);
 
 const intersects = (a: GDSBBox, b: GDSBBox): boolean =>
   a.x2 >= b.x1 && a.x1 <= b.x2 && a.y2 >= b.y1 && a.y1 <= b.y2;
+
+const translateBBox = (bbox: GDSBBox, dx: number, dy: number): GDSBBox => ({
+  x1: bbox.x1 + dx,
+  y1: bbox.y1 + dy,
+  x2: bbox.x2 + dx,
+  y2: bbox.y2 + dy,
+});
+
+const expandBBoxWith = (bbox: GDSBBox, other: GDSBBox): void => {
+  bbox.x1 = Math.min(bbox.x1, other.x1);
+  bbox.y1 = Math.min(bbox.y1, other.y1);
+  bbox.x2 = Math.max(bbox.x2, other.x2);
+  bbox.y2 = Math.max(bbox.y2, other.y2);
+};
+
+/** Compute an array's bbox from the four corner instance translations; a regular translated grid reaches x/y extrema at its parallelogram corners. */
+const translatedArrayBBox = (instanceBBox: GDSBBox, columnVector: { x: number; y: number }, rowVector: { x: number; y: number }, columns: number, rows: number): GDSBBox => {
+  const bbox = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
+  for (const [col, row] of [[0, 0], [columns - 1, 0], [0, rows - 1], [columns - 1, rows - 1]] as [number, number][]) {
+    expandBBoxWith(bbox, translateBBox(instanceBBox, columnVector.x * col + rowVector.x * row, columnVector.y * col + rowVector.y * row));
+  }
+  return bbox;
+};
+
+/**
+ * Compute the inclusive index range whose translated instance interval can intersect the viewport.
+ * `step` is the array spacing on one axis, `instanceAxisMin/Max` are the single-instance bbox
+ * extents on that axis, and `viewportMin/Max` are the visible region extents on the same axis.
+ */
+const computeVisibleIndexRange = (count: number, step: number, instanceAxisMin: number, instanceAxisMax: number, viewportMin: number, viewportMax: number): [number, number] | null => {
+  if (count <= 0) return null;
+  if (Math.abs(step) < AXIS_EPSILON) return instanceAxisMax >= viewportMin && instanceAxisMin <= viewportMax ? [0, count - 1] : null;
+  const minRaw = step > 0 ? (viewportMin - instanceAxisMax) / step : (viewportMax - instanceAxisMin) / step;
+  const maxRaw = step > 0 ? (viewportMax - instanceAxisMin) / step : (viewportMin - instanceAxisMax) / step;
+  const start = Math.max(0, Math.ceil(minRaw));
+  const end = Math.min(count - 1, Math.floor(maxRaw));
+  return start <= end ? [start, end] : null;
+};
+
+/** Return whether a non-zero vector is aligned with the given axis within AXIS_EPSILON tolerance. */
+const isAxisAlignedStep = (vector: { x: number; y: number }, axis: Axis): boolean =>
+  axis === 'x'
+    ? Math.abs(vector.x) >= AXIS_EPSILON && Math.abs(vector.y) < AXIS_EPSILON
+    : Math.abs(vector.y) >= AXIS_EPSILON && Math.abs(vector.x) < AXIS_EPSILON;
+
+const getAxisAlignedGridAxes = (columnVector: { x: number; y: number }, rowVector: { x: number; y: number }): { columnAxis: Axis; rowAxis: Axis } | null => {
+  if (isAxisAlignedStep(columnVector, 'x') && isAxisAlignedStep(rowVector, 'y')) return { columnAxis: 'x', rowAxis: 'y' };
+  if (isAxisAlignedStep(columnVector, 'y') && isAxisAlignedStep(rowVector, 'x')) return { columnAxis: 'y', rowAxis: 'x' };
+  return null;
+};
 
 /**
  * Compute the bounding box of the pre-image of worldBBox under the given GDS transform.
@@ -164,9 +227,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   const cursorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // RenderStats: throttled to avoid re-renders every animation frame.
-  const renderStatsLatestRef = useRef({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
+  const renderStatsLatestRef = useRef({ visible: 0, culled: 0, refsVisible: 0, lodCulled: 0, lodSimplified: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
   const renderStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
+  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, lodCulled: 0, lodSimplified: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
 
   // Clean up throttle timers on unmount.
   useEffect(() => () => {
@@ -274,6 +337,8 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     let visible = 0;
     let culled = 0;
     let refsVisible = 0;
+    let lodCulled = 0;
+    let lodSimplified = 0;
     let depthLimitHit = false;
 
     if (flattenRefs && flattened) {
@@ -339,14 +404,58 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           if (!target?.bbox) continue;
           const columns = ref.columns ?? 1;
           const rows = ref.rows ?? 1;
-          for (let row = 0; row < rows; row += 1) {
-            for (let col = 0; col < columns; col += 1) {
-              const dx = (ref.columnVector?.x ?? 0) * col + (ref.rowVector?.x ?? 0) * row;
-              const dy = (ref.columnVector?.y ?? 0) * col + (ref.rowVector?.y ?? 0) * row;
+          const columnVector = ref.columnVector ?? { x: 0, y: 0 };
+          const rowVector = ref.rowVector ?? { x: 0, y: 0 };
+          const baseInstBBox = transformBBox(target.bbox, ref.transform);
+          const arrayBBox = translatedArrayBBox(baseInstBBox, columnVector, rowVector, columns, rows);
+          if (!intersects(arrayBBox, localVisibleBBox)) continue;
+
+          let colStart = 0;
+          let colEnd = columns - 1;
+          let rowStart = 0;
+          let rowEnd = rows - 1;
+          const axisAlignedGridAxes = getAxisAlignedGridAxes(columnVector, rowVector);
+
+          if (axisAlignedGridAxes) {
+            const colRange = axisAlignedGridAxes.columnAxis === 'x'
+              ? computeVisibleIndexRange(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
+              : computeVisibleIndexRange(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
+            const rowRange = axisAlignedGridAxes.rowAxis === 'x'
+              ? computeVisibleIndexRange(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
+              : computeVisibleIndexRange(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
+            if (!colRange || !rowRange) continue;
+            [colStart, colEnd] = colRange;
+            [rowStart, rowEnd] = rowRange;
+          }
+
+          for (let row = rowStart; row <= rowEnd; row += 1) {
+            for (let col = colStart; col <= colEnd; col += 1) {
+              const dx = columnVector.x * col + rowVector.x * row;
+              const dy = columnVector.y * col + rowVector.y * row;
+              const instBBox = translateBBox(baseInstBBox, dx, dy);
+              if (!axisAlignedGridAxes && !intersects(instBBox, localVisibleBBox)) continue;
+
+              // LOD: measure the instance's longest screen-space dimension to decide detail level.
+              const instScreenPx = effectiveScale * Math.max(
+                instBBox.x2 - instBBox.x1,
+                instBBox.y2 - instBBox.y1,
+              );
+              if (instScreenPx < LOD_SKIP_PX) {
+                // Instance is sub-pixel; skip entirely to avoid unnecessary work.
+                lodCulled += 1;
+                continue;
+              }
+              if (instScreenPx < LOD_BBOX_PX) {
+                // Instance is very small; draw a simple bbox outline instead of recursing.
+                lodSimplified += 1;
+                ctx.globalAlpha = LOD_BBOX_ALPHA;
+                ctx.strokeStyle = LOD_BBOX_COLOR;
+                ctx.lineWidth = 1 / effectiveScale;
+                ctx.strokeRect(instBBox.x1, instBBox.y1, instBBox.x2 - instBBox.x1, instBBox.y2 - instBBox.y1);
+                continue;
+              }
+
               const T: GDSTransform = { ...ref.transform, x: ref.transform.x + dx, y: ref.transform.y + dy };
-              // Cell-level bbox culling: skip if the instance's world bbox doesn't intersect viewport.
-              const instBBox = transformBBox(target.bbox, T);
-              if (!intersects(instBBox, localVisibleBBox)) continue;
               refsVisible += 1;
               // Apply the GDS transform to the canvas so that cell-local coords map to world coords.
               const rad = (T.angle * Math.PI) / 180;
@@ -395,6 +504,8 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
       visible,
       culled,
       refsVisible,
+      lodCulled,
+      lodSimplified,
       drawMs: performance.now() - start,
       truncated: Boolean(flattened?.truncated),
       refsTruncated: refBoxResult.truncated,
@@ -568,7 +679,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 <canvas ref={canvasRef} className="canvas-overlay-abs" />
                 {(import.meta.env.DEV || cursor) && (
                   <div className="position-absolute bottom-0 start-0 m-2 small bg-light border rounded px-2 py-1">
-                    {import.meta.env.DEV && <>visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms</>}
+                    {import.meta.env.DEV && <>visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / lod-skip {renderStats.lodCulled.toLocaleString()} / lod-bbox {renderStats.lodSimplified.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms</>}
                     {cursor && <>{import.meta.env.DEV && ' / '}x {cursor.x.toFixed(2)} um, y {cursor.y.toFixed(2)} um</>}
                   </div>
                 )}
