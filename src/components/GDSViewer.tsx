@@ -22,6 +22,7 @@ const MAX_REFERENCE_BOXES = 75_000;
 const MAX_HIERARCHY_DEPTH = 32;
 /** Throttle interval (ms) for React state updates driven by frequent events (mousemove, draw). */
 const THROTTLE_MS = 100;
+const AXIS_EPSILON = 1e-12;
 
 const layerColor = (layer: number): string => {
   const hues = [45, 95, 320, 205, 50, 25, 265, 185, 0, 150, 285, 15];
@@ -58,16 +59,20 @@ const translatedArrayBBox = (instanceBBox: GDSBBox, columnVector: { x: number; y
   return bbox;
 };
 
-const indexRangeForTranslatedInterval = (count: number, step: number, baseMin: number, baseMax: number, viewMin: number, viewMax: number): [number, number] | null => {
-  const EPS = 1e-12;
+const visibleIndexRangeForTranslatedInterval = (count: number, step: number, instanceMin: number, instanceMax: number, viewportMin: number, viewportMax: number): [number, number] | null => {
   if (count <= 0) return null;
-  if (Math.abs(step) < EPS) return baseMax >= viewMin && baseMin <= viewMax ? [0, count - 1] : null;
-  const minRaw = step > 0 ? (viewMin - baseMax) / step : (viewMax - baseMin) / step;
-  const maxRaw = step > 0 ? (viewMax - baseMin) / step : (viewMin - baseMax) / step;
+  if (Math.abs(step) < AXIS_EPSILON) return instanceMax >= viewportMin && instanceMin <= viewportMax ? [0, count - 1] : null;
+  const minRaw = step > 0 ? (viewportMin - instanceMax) / step : (viewportMax - instanceMin) / step;
+  const maxRaw = step > 0 ? (viewportMax - instanceMin) / step : (viewportMin - instanceMax) / step;
   const start = Math.max(0, Math.ceil(minRaw));
   const end = Math.min(count - 1, Math.floor(maxRaw));
   return start <= end ? [start, end] : null;
 };
+
+const movesAlongAxis = (vector: { x: number; y: number }, axis: 'x' | 'y'): boolean =>
+  axis === 'x'
+    ? Math.abs(vector.x) >= AXIS_EPSILON && Math.abs(vector.y) < AXIS_EPSILON
+    : Math.abs(vector.y) >= AXIS_EPSILON && Math.abs(vector.x) < AXIS_EPSILON;
 
 /**
  * Compute the bounding box of the pre-image of worldBBox under the given GDS transform.
@@ -382,20 +387,19 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           let colEnd = columns - 1;
           let rowStart = 0;
           let rowEnd = rows - 1;
-          const axisEps = 1e-12;
-          const columnsMoveX = Math.abs(columnVector.x) >= axisEps && Math.abs(columnVector.y) < axisEps;
-          const columnsMoveY = Math.abs(columnVector.y) >= axisEps && Math.abs(columnVector.x) < axisEps;
-          const rowsMoveX = Math.abs(rowVector.x) >= axisEps && Math.abs(rowVector.y) < axisEps;
-          const rowsMoveY = Math.abs(rowVector.y) >= axisEps && Math.abs(rowVector.x) < axisEps;
+          const columnsMoveX = movesAlongAxis(columnVector, 'x');
+          const columnsMoveY = movesAlongAxis(columnVector, 'y');
+          const rowsMoveX = movesAlongAxis(rowVector, 'x');
+          const rowsMoveY = movesAlongAxis(rowVector, 'y');
           const useAxisRanges = (columnsMoveX && rowsMoveY) || (columnsMoveY && rowsMoveX);
 
           if (useAxisRanges) {
             const colRange = columnsMoveX
-              ? indexRangeForTranslatedInterval(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
-              : indexRangeForTranslatedInterval(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
+              ? visibleIndexRangeForTranslatedInterval(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
+              : visibleIndexRangeForTranslatedInterval(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
             const rowRange = rowsMoveX
-              ? indexRangeForTranslatedInterval(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
-              : indexRangeForTranslatedInterval(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
+              ? visibleIndexRangeForTranslatedInterval(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
+              : visibleIndexRangeForTranslatedInterval(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
             if (!colRange || !rowRange) continue;
             [colStart, colEnd] = colRange;
             [rowStart, rowEnd] = rowRange;
