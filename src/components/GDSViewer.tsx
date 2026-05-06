@@ -24,6 +24,13 @@ const MAX_HIERARCHY_DEPTH = 32;
 const THROTTLE_MS = 100;
 /** Tolerance for treating array vectors as axis-aligned or zero length. */
 const AXIS_EPSILON = 1e-12;
+/**
+ * LOD (Level of Detail) thresholds based on the instance's longest screen-space dimension.
+ * Below LOD_SKIP_PX the instance is entirely sub-pixel and is culled.
+ * Below LOD_BBOX_PX the instance is drawn as a bbox outline instead of recursing into geometry.
+ */
+const LOD_SKIP_PX = 1;
+const LOD_BBOX_PX = 4;
 
 const layerColor = (layer: number): string => {
   const hues = [45, 95, 320, 205, 50, 25, 265, 185, 0, 150, 285, 15];
@@ -218,9 +225,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   const cursorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // RenderStats: throttled to avoid re-renders every animation frame.
-  const renderStatsLatestRef = useRef({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
+  const renderStatsLatestRef = useRef({ visible: 0, culled: 0, refsVisible: 0, lodCulled: 0, lodSimplified: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
   const renderStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
+  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, lodCulled: 0, lodSimplified: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
 
   // Clean up throttle timers on unmount.
   useEffect(() => () => {
@@ -328,6 +335,8 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     let visible = 0;
     let culled = 0;
     let refsVisible = 0;
+    let lodCulled = 0;
+    let lodSimplified = 0;
     let depthLimitHit = false;
 
     if (flattenRefs && flattened) {
@@ -423,6 +432,27 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               const dy = columnVector.y * col + rowVector.y * row;
               const instBBox = translateBBox(baseInstBBox, dx, dy);
               if (!axisAlignedGridAxes && !intersects(instBBox, localVisibleBBox)) continue;
+
+              // LOD: measure the instance's longest screen-space dimension to decide detail level.
+              const instScreenPx = effectiveScale * Math.max(
+                Math.abs(instBBox.x2 - instBBox.x1),
+                Math.abs(instBBox.y2 - instBBox.y1),
+              );
+              if (instScreenPx < LOD_SKIP_PX) {
+                // Instance is sub-pixel; skip entirely to avoid unnecessary work.
+                lodCulled += 1;
+                continue;
+              }
+              if (instScreenPx < LOD_BBOX_PX) {
+                // Instance is very small; draw a simple bbox outline instead of recursing.
+                lodSimplified += 1;
+                ctx.globalAlpha = 0.45;
+                ctx.strokeStyle = '#888';
+                ctx.lineWidth = 1 / effectiveScale;
+                ctx.strokeRect(instBBox.x1, instBBox.y1, instBBox.x2 - instBBox.x1, instBBox.y2 - instBBox.y1);
+                continue;
+              }
+
               const T: GDSTransform = { ...ref.transform, x: ref.transform.x + dx, y: ref.transform.y + dy };
               refsVisible += 1;
               // Apply the GDS transform to the canvas so that cell-local coords map to world coords.
@@ -472,6 +502,8 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
       visible,
       culled,
       refsVisible,
+      lodCulled,
+      lodSimplified,
       drawMs: performance.now() - start,
       truncated: Boolean(flattened?.truncated),
       refsTruncated: refBoxResult.truncated,
@@ -645,7 +677,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 <canvas ref={canvasRef} className="canvas-overlay-abs" />
                 {(import.meta.env.DEV || cursor) && (
                   <div className="position-absolute bottom-0 start-0 m-2 small bg-light border rounded px-2 py-1">
-                    {import.meta.env.DEV && <>visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms</>}
+                    {import.meta.env.DEV && <>visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / lod-skip {renderStats.lodCulled.toLocaleString()} / lod-bbox {renderStats.lodSimplified.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms</>}
                     {cursor && <>{import.meta.env.DEV && ' / '}x {cursor.x.toFixed(2)} um, y {cursor.y.toFixed(2)} um</>}
                   </div>
                 )}
