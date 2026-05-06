@@ -33,6 +33,14 @@ const LOD_SKIP_PX = 1;
 const LOD_BBOX_PX = 8;
 const LOD_BBOX_ALPHA = 0.45;
 const LOD_BBOX_COLOR = '#888';
+/**
+ * Maximum time (ms) a single draw() call may spend before it stops rendering further shapes.
+ * Prevents main-thread freezes on large or complex GDS files. A partial frame is shown and
+ * the user is warned to zoom in or hide some layers.
+ */
+const DRAW_BUDGET_MS = 50;
+/** Check elapsed time after this many shapes to limit performance.now() call overhead. */
+const DRAW_BUDGET_CHECK_INTERVAL = 512;
 
 const layerColorCache = new Map<number, string>();
 const layerColor = (layer: number): string => {
@@ -232,9 +240,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   const cursorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // RenderStats: throttled to avoid re-renders every animation frame.
-  const renderStatsLatestRef = useRef({ visible: 0, culled: 0, refsVisible: 0, lodCulled: 0, lodSimplified: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
+  const renderStatsLatestRef = useRef({ visible: 0, culled: 0, refsVisible: 0, lodCulled: 0, lodSimplified: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false, budgetExceeded: false });
   const renderStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, lodCulled: 0, lodSimplified: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
+  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, lodCulled: 0, lodSimplified: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false, budgetExceeded: false });
 
   // rAF handle: cancel any pending frame before scheduling a new one so rapid state
   // updates (e.g. every mousemove during panning) only produce one draw per display frame.
@@ -351,6 +359,19 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     let lodSimplified = 0;
     let depthLimitHit = false;
 
+    // Draw budget: stop rendering if a single frame takes too long to prevent main-thread freezes.
+    // checkBudget() is called every DRAW_BUDGET_CHECK_INTERVAL shapes to limit overhead.
+    let drawBudgetExceeded = false;
+    let budgetCheckShapes = 0;
+    const checkBudget = () => {
+      budgetCheckShapes += 1;
+      if ((budgetCheckShapes & (DRAW_BUDGET_CHECK_INTERVAL - 1)) === 0) {
+        if (performance.now() - start > DRAW_BUDGET_MS) {
+          drawBudgetExceeded = true;
+        }
+      }
+    };
+
     // Canvas state tracking: avoid redundant style/alpha assignments, which are
     // surprisingly expensive in browsers (they force style-parsing or attribute sync).
     // After any ctx.restore() these must be reset to '' / -1 so the next draw re-applies.
@@ -370,18 +391,22 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     if (flattenRefs && flattened) {
       // Flatten mode: draw pre-flattened polygons and paths directly (all in world coords).
       for (const polygon of flattened.polygons) {
+        if (drawBudgetExceeded) break;
         if (!visibleLayers.has(polygon.layer)) continue;
         if (!intersects(polygon.bbox, visibleBBox)) { culled += 1; continue; }
         visible += 1;
         setFill(layerColor(polygon.layer), 0.68);
         renderPolygon(ctx, polygon);
+        checkBudget();
       }
       for (const path of flattened.paths) {
+        if (drawBudgetExceeded) break;
         if (!visibleLayers.has(path.layer)) continue;
         if (!intersects(path.bbox, visibleBBox)) { culled += 1; continue; }
         visible += 1;
         setStroke(layerColor(path.layer), 0.8);
         renderPath(ctx, path, absScale);
+        checkBudget();
       }
     } else if (selectedCell) {
       // Hierarchy-preserving mode: traverse the cell tree using transform stack.
@@ -390,38 +415,46 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
       // used for per-shape culling without transforming individual shape bboxes.
       // effectiveScale is absScale × accumulated magnification, used for minimum stroke width.
       const drawCellRecursive = (cell: GDSCell, depth: number, localVisibleBBox: GDSBBox, effectiveScale: number) => {
+        if (drawBudgetExceeded) return;
         if (depth > MAX_HIERARCHY_DEPTH) { depthLimitHit = true; return; }
 
         // Draw rects
         for (const rect of cell.rects) {
+          if (drawBudgetExceeded) return;
           if (!visibleLayers.has(rect.layer)) continue;
           if (!intersects(rect, localVisibleBBox)) { culled += 1; continue; }
           visible += 1;
           setFill(layerColor(rect.layer), 0.68);
           renderRect(ctx, rect);
+          checkBudget();
         }
 
         // Draw polygons
         for (const polygon of cell.polygons) {
+          if (drawBudgetExceeded) return;
           if (!visibleLayers.has(polygon.layer)) continue;
           if (!intersects(polygon.bbox, localVisibleBBox)) { culled += 1; continue; }
           visible += 1;
           setFill(layerColor(polygon.layer), 0.68);
           renderPolygon(ctx, polygon);
+          checkBudget();
         }
 
         // Draw paths — use effectiveScale so the 1px minimum stroke is correct at this
         // depth even when the canvas has accumulated magnification from parent transforms.
         for (const path of cell.paths) {
+          if (drawBudgetExceeded) return;
           if (!visibleLayers.has(path.layer)) continue;
           if (!intersects(path.bbox, localVisibleBBox)) { culled += 1; continue; }
           visible += 1;
           setStroke(layerColor(path.layer), 0.8);
           renderPath(ctx, path, effectiveScale);
+          checkBudget();
         }
 
         // Recurse into references with cell-level bbox culling.
         for (const ref of cell.references) {
+          if (drawBudgetExceeded) return;
           const target = gdsData.cellMap.get(ref.name);
           if (!target?.bbox) continue;
           const columns = ref.columns ?? 1;
@@ -457,7 +490,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
             ref.transform.angle === 0 && ref.transform.mag === 1 && !ref.transform.reflect;
 
           for (let row = rowStart; row <= rowEnd; row += 1) {
+            if (drawBudgetExceeded) break;
             for (let col = colStart; col <= colEnd; col += 1) {
+              if (drawBudgetExceeded) break;
               const dx = columnVector.x * col + rowVector.x * row;
               const dy = columnVector.y * col + rowVector.y * row;
               const instBBox = translateBBox(baseInstBBox, dx, dy);
@@ -479,6 +514,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 setStroke(LOD_BBOX_COLOR, LOD_BBOX_ALPHA);
                 ctx.lineWidth = 1 / effectiveScale;
                 ctx.strokeRect(instBBox.x1, instBBox.y1, instBBox.x2 - instBBox.x1, instBBox.y2 - instBBox.y1);
+                checkBudget();
                 continue;
               }
 
@@ -559,6 +595,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
       truncated: Boolean(flattened?.truncated),
       refsTruncated: refBoxResult.truncated,
       depthLimitHit,
+      budgetExceeded: drawBudgetExceeded,
     };
     renderStatsLatestRef.current = newStats;
     if (!renderStatsTimerRef.current) {
@@ -701,6 +738,11 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                   Hierarchy deeper than 32 levels; some geometry may not be shown. Enable &ldquo;Flatten refs&rdquo; to display fully.
                 </div>
               )}
+              {renderStats.budgetExceeded && (
+                <div className="text-danger small mt-1">
+                  Too many visible objects — drawing cut short. Zoom in or hide some layers to see full detail.
+                </div>
+              )}
               <hr />
               <div className="d-flex gap-1 mb-2">
                 <Button size="sm" variant="outline-secondary" onClick={() => setVisibleLayers(new Set(allLayers))}>All</Button>
@@ -738,6 +780,11 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 onDoubleClick={fit}
               >
                 <canvas ref={canvasRef} className="canvas-overlay-abs" />
+                {renderStats.budgetExceeded && (
+                  <div className="position-absolute top-0 start-0 end-0 m-2 small text-center bg-warning bg-opacity-90 border border-warning rounded px-2 py-1 fw-semibold" style={{ pointerEvents: 'none' }}>
+                    ⚠ Too many visible objects — drawing cut short. Zoom in or hide some layers to see full detail.
+                  </div>
+                )}
                 {(import.meta.env.DEV || cursor) && (
                   <div className="position-absolute bottom-0 start-0 m-2 small bg-light border rounded px-2 py-1">
                     {import.meta.env.DEV && <>visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / lod-skip {renderStats.lodCulled.toLocaleString()} / lod-bbox {renderStats.lodSimplified.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms</>}
