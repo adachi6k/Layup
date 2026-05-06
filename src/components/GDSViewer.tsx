@@ -22,6 +22,7 @@ const MAX_REFERENCE_BOXES = 75_000;
 const MAX_HIERARCHY_DEPTH = 32;
 /** Throttle interval (ms) for React state updates driven by frequent events (mousemove, draw). */
 const THROTTLE_MS = 100;
+/** Tolerance for treating array vectors as axis-aligned or zero length. */
 const AXIS_EPSILON = 1e-12;
 
 const layerColor = (layer: number): string => {
@@ -53,7 +54,7 @@ const expandBBoxWith = (bbox: GDSBBox, other: GDSBBox): void => {
   bbox.y2 = Math.max(bbox.y2, other.y2);
 };
 
-/** Compute an array's bbox from the four corner instance translations; linear translation grids reach axis extrema at corners. */
+/** Compute an array's bbox from the four corner instance translations; a regular translated grid reaches x/y extrema at its parallelogram corners. */
 const translatedArrayBBox = (instanceBBox: GDSBBox, columnVector: { x: number; y: number }, rowVector: { x: number; y: number }, columns: number, rows: number): GDSBBox => {
   const bbox = { x1: Infinity, y1: Infinity, x2: -Infinity, y2: -Infinity };
   for (const [col, row] of [[0, 0], [columns - 1, 0], [0, rows - 1], [columns - 1, rows - 1]] as [number, number][]) {
@@ -403,7 +404,6 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           let rowStart = 0;
           let rowEnd = rows - 1;
           const axisAlignedGridAxes = getAxisAlignedGridAxes(columnVector, rowVector);
-          const canUseOptimizedRanges = axisAlignedGridAxes !== null;
 
           if (axisAlignedGridAxes) {
             const colRange = axisAlignedGridAxes.columnAxis === 'x'
@@ -422,7 +422,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               const dx = columnVector.x * col + rowVector.x * row;
               const dy = columnVector.y * col + rowVector.y * row;
               const instBBox = translateBBox(baseInstBBox, dx, dy);
-              if (!canUseOptimizedRanges && !intersects(instBBox, localVisibleBBox)) continue;
+              if (!axisAlignedGridAxes && !intersects(instBBox, localVisibleBBox)) continue;
               const T: GDSTransform = { ...ref.transform, x: ref.transform.x + dx, y: ref.transform.y + dy };
               refsVisible += 1;
               // Apply the GDS transform to the canvas so that cell-local coords map to world coords.
