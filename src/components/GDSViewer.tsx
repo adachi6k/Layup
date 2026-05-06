@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type React from 'react';
 import { Badge, Button, Card, Col, Form, ListGroup, Row } from 'react-bootstrap';
-import type { GDSBBox, GDSCell, GDSData, GDSPath, GDSPolygon } from '../types/gds';
+import type { GDSBBox, GDSCell, GDSData, GDSPath, GDSPolygon, GDSRect, GDSTransform } from '../types/gds';
 import { flattenGDSCell, transformBBox } from '../utils/gdsParser';
 import { useCanvasViewport, syncCanvasDpr } from '../hooks/useCanvasViewport';
 
@@ -10,17 +10,18 @@ interface GDSViewerProps {
   filename: string;
 }
 
-type DrawItem =
-  | { kind: 'polygon'; layer: number; datatype: number; points: { x: number; y: number }[]; bbox: GDSBBox }
-  | { kind: 'path'; layer: number; datatype: number; width: number; points: { x: number; y: number }[]; bbox: GDSBBox };
-
 interface RefBox {
   name: string;
   bbox: GDSBBox;
 }
 
 const MAX_FLATTENED_SHAPES = 250_000;
+const FLATTEN_WARN_SHAPES = 50_000;
 const MAX_REFERENCE_BOXES = 75_000;
+/** Maximum GDS hierarchy depth the hierarchy renderer will descend before stopping. */
+const MAX_HIERARCHY_DEPTH = 32;
+/** Throttle interval (ms) for React state updates driven by frequent events (mousemove, draw). */
+const THROTTLE_MS = 100;
 
 const layerColor = (layer: number): string => {
   const hues = [45, 95, 320, 205, 50, 25, 265, 185, 0, 150, 285, 15];
@@ -35,7 +36,45 @@ const bboxHeight = (bbox: GDSBBox) => Math.max(1e-9, bbox.y2 - bbox.y1);
 const intersects = (a: GDSBBox, b: GDSBBox): boolean =>
   a.x2 >= b.x1 && a.x1 <= b.x2 && a.y2 >= b.y1 && a.y1 <= b.y2;
 
-const renderPolygon = (ctx: CanvasRenderingContext2D, polygon: GDSPolygon | Extract<DrawItem, { kind: 'polygon' }>) => {
+/**
+ * Compute the bounding box of the pre-image of worldBBox under the given GDS transform.
+ * This gives the region in local (cell) coordinates that maps into worldBBox, and is
+ * used for conservative per-shape viewport culling when drawing recursively.
+ */
+const inverseTransformBBox = (worldBBox: GDSBBox, T: GDSTransform): GDSBBox => {
+  const rad = (T.angle * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const invMag = T.mag !== 0 ? 1 / T.mag : 0;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  // Transform all 4 corners of worldBBox to local space
+  for (const [wx, wy] of [
+    [worldBBox.x1, worldBBox.y1],
+    [worldBBox.x1, worldBBox.y2],
+    [worldBBox.x2, worldBBox.y1],
+    [worldBBox.x2, worldBBox.y2],
+  ] as [number, number][]) {
+    const sx = wx - T.x;
+    const sy = wy - T.y;
+    // Inverse rotation by -angle then unscale
+    const ux = (sx * cos + sy * sin) * invMag;
+    const uy = (-sx * sin + sy * cos) * invMag;
+    // Inverse reflect
+    const lx = ux;
+    const ly = T.reflect ? -uy : uy;
+    if (lx < minX) minX = lx;
+    if (lx > maxX) maxX = lx;
+    if (ly < minY) minY = ly;
+    if (ly > maxY) maxY = ly;
+  }
+  return { x1: minX, y1: minY, x2: maxX, y2: maxY };
+};
+
+const renderRect = (ctx: CanvasRenderingContext2D, rect: GDSRect) => {
+  ctx.fillRect(rect.x1, rect.y1, rect.x2 - rect.x1, rect.y2 - rect.y1);
+};
+
+const renderPolygon = (ctx: CanvasRenderingContext2D, polygon: GDSPolygon) => {
   if (polygon.points.length < 2) return;
   ctx.beginPath();
   ctx.moveTo(polygon.points[0].x, polygon.points[0].y);
@@ -44,13 +83,44 @@ const renderPolygon = (ctx: CanvasRenderingContext2D, polygon: GDSPolygon | Extr
   ctx.fill();
 };
 
-const renderPath = (ctx: CanvasRenderingContext2D, path: GDSPath | Extract<DrawItem, { kind: 'path' }>, absScale: number) => {
+const renderPath = (ctx: CanvasRenderingContext2D, path: GDSPath, absScale: number) => {
   if (path.points.length < 2) return;
   ctx.beginPath();
   ctx.moveTo(path.points[0].x, path.points[0].y);
   for (let i = 1; i < path.points.length; i += 1) ctx.lineTo(path.points[i].x, path.points[i].y);
   ctx.lineWidth = Math.max(path.width, 1 / absScale);
   ctx.stroke();
+};
+
+/**
+ * Estimate the total number of shapes that would be produced by flattening the given cell.
+ * Uses memoized recursive expansion (accounting for AREF multipliers) up to depth MAX_HIERARCHY_DEPTH and
+ * short-circuits once `cap` is exceeded. This gives an accurate per-cell estimate instead
+ * of the file-wide primitive totals, which can be misleading for heavily instanced designs.
+ */
+const estimateFlattenedShapeCount = (data: GDSData, cellName: string, cap: number): number => {
+  const cache = new Map<string, number>();
+  const visiting = new Set<string>();
+
+  const estimate = (name: string, depth: number): number => {
+    if (depth > MAX_HIERARCHY_DEPTH) return 0;
+    if (cache.has(name)) return cache.get(name)!;
+    if (visiting.has(name)) return 0; // circular ref guard
+    const cell = data.cellMap.get(name);
+    if (!cell) return 0;
+    visiting.add(name);
+    let count = cell.rects.length + cell.polygons.length + cell.paths.length;
+    for (const ref of cell.references) {
+      if (count >= cap) break;
+      const instances = (ref.columns ?? 1) * (ref.rows ?? 1);
+      count += instances * estimate(ref.name, depth + 1);
+    }
+    visiting.delete(name);
+    cache.set(name, count);
+    return count;
+  };
+
+  return estimate(cellName, 0);
 };
 
 const collectReferenceBoxes = (cell: GDSCell, data: GDSData): { boxes: RefBox[]; truncated: boolean } => {
@@ -86,8 +156,23 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   const [showRefs, setShowRefs] = useState(true);
   const [flattenRefs, setFlattenRefs] = useState(false);
   const [baseScale, setBaseScale] = useState(1);
+
+  // Cursor: keep actual coords in a ref (updated every mousemove) and throttle the
+  // React state update to ~100 ms so that frequent mouse moves don't trigger excessive re-renders.
+  const cursorRef = useRef<{ x: number; y: number } | null>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
-  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false });
+  const cursorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // RenderStats: throttled to avoid re-renders every animation frame.
+  const renderStatsLatestRef = useRef({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
+  const renderStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [renderStats, setRenderStats] = useState({ visible: 0, culled: 0, refsVisible: 0, drawMs: 0, truncated: false, refsTruncated: false, depthLimitHit: false });
+
+  // Clean up throttle timers on unmount.
+  useEffect(() => () => {
+    if (cursorTimerRef.current) clearTimeout(cursorTimerRef.current);
+    if (renderStatsTimerRef.current) clearTimeout(renderStatsTimerRef.current);
+  }, []);
 
   const selectedCell = gdsData.cellMap.get(selectedCellName) ?? gdsData.cellMap.get(gdsData.topCellName) ?? gdsData.cells[0];
   const selectedBBox = selectedCell?.bbox ?? gdsData.bbox;
@@ -96,6 +181,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   const allLayers = useMemo(() => {
     const layers = new Set<number>();
     gdsData.cells.forEach((cell) => {
+      cell.rects.forEach((rect) => layers.add(rect.layer));
       cell.polygons.forEach((polygon) => layers.add(polygon.layer));
       cell.paths.forEach((path) => layers.add(path.layer));
     });
@@ -132,25 +218,13 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     return flattenGDSCell(gdsData, selectedCell.name, MAX_FLATTENED_SHAPES);
   }, [flattenRefs, gdsData, selectedCell]);
 
-  const drawItems = useMemo<DrawItem[]>(() => {
-    if (!selectedCell) return [];
-    const polygons = (flattened?.polygons ?? selectedCell.polygons).map((polygon) => ({
-      kind: 'polygon' as const,
-      layer: polygon.layer,
-      datatype: polygon.datatype,
-      points: polygon.points,
-      bbox: polygon.bbox,
-    }));
-    const paths = (flattened?.paths ?? selectedCell.paths).map((path) => ({
-      kind: 'path' as const,
-      layer: path.layer,
-      datatype: path.datatype,
-      width: path.width,
-      points: path.points,
-      bbox: path.bbox,
-    }));
-    return [...polygons, ...paths];
-  }, [flattened, selectedCell]);
+  // Estimated expanded shape count for the selected cell, used to warn before flattening.
+  // Recomputed only when the selected cell or data changes, not when flattenRefs toggles,
+  // so the warning shows before the user commits to flattening.
+  const estimatedFlattenCount = useMemo(
+    () => estimateFlattenedShapeCount(gdsData, selectedCellName, MAX_FLATTENED_SHAPES + 1),
+    [gdsData, selectedCellName],
+  );
 
   const refBoxResult = useMemo(() => (selectedCell ? collectReferenceBoxes(selectedCell, gdsData) : { boxes: [], truncated: false }), [gdsData, selectedCell]);
   const refBoxes = refBoxResult.boxes;
@@ -200,24 +274,106 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     let visible = 0;
     let culled = 0;
     let refsVisible = 0;
-    drawItems.forEach((item) => {
-      if (!visibleLayers.has(item.layer)) return;
-      if (!intersects(item.bbox, visibleBBox)) {
-        culled += 1;
-        return;
-      }
-      visible += 1;
-      const color = layerColor(item.layer);
-      if (item.kind === 'polygon') {
+    let depthLimitHit = false;
+
+    if (flattenRefs && flattened) {
+      // Flatten mode: draw pre-flattened polygons and paths directly (all in world coords).
+      for (const polygon of flattened.polygons) {
+        if (!visibleLayers.has(polygon.layer)) continue;
+        if (!intersects(polygon.bbox, visibleBBox)) { culled += 1; continue; }
+        visible += 1;
         ctx.globalAlpha = 0.68;
-        ctx.fillStyle = color;
-        renderPolygon(ctx, item);
-      } else {
-        ctx.globalAlpha = 0.8;
-        ctx.strokeStyle = color;
-        renderPath(ctx, item, absScale);
+        ctx.fillStyle = layerColor(polygon.layer);
+        renderPolygon(ctx, polygon);
       }
-    });
+      for (const path of flattened.paths) {
+        if (!visibleLayers.has(path.layer)) continue;
+        if (!intersects(path.bbox, visibleBBox)) { culled += 1; continue; }
+        visible += 1;
+        ctx.globalAlpha = 0.8;
+        ctx.strokeStyle = layerColor(path.layer);
+        renderPath(ctx, path, absScale);
+      }
+    } else if (selectedCell) {
+      // Hierarchy-preserving mode: traverse the cell tree using transform stack.
+      // No shape copies are created; canvas context transforms are used instead.
+      // localVisibleBBox is the visible region in the current cell's local coordinate system,
+      // used for per-shape culling without transforming individual shape bboxes.
+      // effectiveScale is absScale × accumulated magnification, used for minimum stroke width.
+      const drawCellRecursive = (cell: GDSCell, depth: number, localVisibleBBox: GDSBBox, effectiveScale: number) => {
+        if (depth > MAX_HIERARCHY_DEPTH) { depthLimitHit = true; return; }
+
+        // Draw rects
+        ctx.globalAlpha = 0.68;
+        for (const rect of cell.rects) {
+          if (!visibleLayers.has(rect.layer)) continue;
+          if (!intersects(rect, localVisibleBBox)) { culled += 1; continue; }
+          visible += 1;
+          ctx.fillStyle = layerColor(rect.layer);
+          renderRect(ctx, rect);
+        }
+
+        // Draw polygons
+        for (const polygon of cell.polygons) {
+          if (!visibleLayers.has(polygon.layer)) continue;
+          if (!intersects(polygon.bbox, localVisibleBBox)) { culled += 1; continue; }
+          visible += 1;
+          ctx.fillStyle = layerColor(polygon.layer);
+          renderPolygon(ctx, polygon);
+        }
+
+        // Draw paths — use effectiveScale so the 1px minimum stroke is correct at this
+        // depth even when the canvas has accumulated magnification from parent transforms.
+        ctx.globalAlpha = 0.8;
+        for (const path of cell.paths) {
+          if (!visibleLayers.has(path.layer)) continue;
+          if (!intersects(path.bbox, localVisibleBBox)) { culled += 1; continue; }
+          visible += 1;
+          ctx.strokeStyle = layerColor(path.layer);
+          renderPath(ctx, path, effectiveScale);
+        }
+
+        // Recurse into references with cell-level bbox culling.
+        for (const ref of cell.references) {
+          const target = gdsData.cellMap.get(ref.name);
+          if (!target?.bbox) continue;
+          const columns = ref.columns ?? 1;
+          const rows = ref.rows ?? 1;
+          for (let row = 0; row < rows; row += 1) {
+            for (let col = 0; col < columns; col += 1) {
+              const dx = (ref.columnVector?.x ?? 0) * col + (ref.rowVector?.x ?? 0) * row;
+              const dy = (ref.columnVector?.y ?? 0) * col + (ref.rowVector?.y ?? 0) * row;
+              const T: GDSTransform = { ...ref.transform, x: ref.transform.x + dx, y: ref.transform.y + dy };
+              // Cell-level bbox culling: skip if the instance's world bbox doesn't intersect viewport.
+              const instBBox = transformBBox(target.bbox, T);
+              if (!intersects(instBBox, localVisibleBBox)) continue;
+              refsVisible += 1;
+              // Apply the GDS transform to the canvas so that cell-local coords map to world coords.
+              const rad = (T.angle * Math.PI) / 180;
+              const cosA = Math.cos(rad);
+              const sinA = Math.sin(rad);
+              const m = T.mag;
+              ctx.save();
+              ctx.transform(
+                cosA * m,
+                sinA * m,
+                T.reflect ? sinA * m : -sinA * m,
+                T.reflect ? -cosA * m : cosA * m,
+                T.x,
+                T.y,
+              );
+              // Compute the visible bbox in the target cell's local coordinate system for culling.
+              const childLocalBBox = inverseTransformBBox(localVisibleBBox, T);
+              // Accumulate magnification so path stroke widths are correct at this depth.
+              drawCellRecursive(target, depth + 1, childLocalBBox, effectiveScale * m);
+              ctx.restore();
+            }
+          }
+        }
+      };
+
+      drawCellRecursive(selectedCell, 0, visibleBBox, absScale);
+    }
     ctx.globalAlpha = 1;
 
     if (showRefs && !flattenRefs) {
@@ -233,15 +389,25 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     }
 
     ctx.restore();
-    setRenderStats({
+
+    // Throttle renderStats state update to ~100 ms to avoid excess re-renders on every frame.
+    const newStats = {
       visible,
       culled,
       refsVisible,
       drawMs: performance.now() - start,
       truncated: Boolean(flattened?.truncated),
       refsTruncated: refBoxResult.truncated,
-    });
-  }, [absScale, containerSize.height, containerSize.width, drawItems, flattened?.truncated, flattenRefs, pan.x, pan.y, refBoxResult.truncated, refBoxes, selectedBBox, showRefs, visibleLayers]);
+      depthLimitHit,
+    };
+    renderStatsLatestRef.current = newStats;
+    if (!renderStatsTimerRef.current) {
+      renderStatsTimerRef.current = setTimeout(() => {
+        renderStatsTimerRef.current = null;
+        setRenderStats(renderStatsLatestRef.current);
+      }, THROTTLE_MS);
+    }
+  }, [absScale, canvasRef, containerSize.height, containerSize.width, flattened, flattenRefs, gdsData.cellMap, pan.x, pan.y, refBoxResult.truncated, refBoxes, selectedBBox, selectedCell, showRefs, visibleLayers]);
 
   useEffect(() => {
     draw();
@@ -269,7 +435,17 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
 
   const onMouseMove = (e: React.MouseEvent) => {
     const rect = containerRef.current?.getBoundingClientRect();
-    if (rect) setCursor(screenToWorld(e.clientX - rect.left, e.clientY - rect.top));
+    if (rect) {
+      const pos = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+      cursorRef.current = pos;
+      // Throttle the React state update to ~100 ms to avoid excess re-renders on every mousemove.
+      if (!cursorTimerRef.current) {
+        cursorTimerRef.current = setTimeout(() => {
+          cursorTimerRef.current = null;
+          setCursor(cursorRef.current);
+        }, THROTTLE_MS);
+      }
+    }
     if (isPanning) updatePan(e.clientX, e.clientY);
   };
 
@@ -292,7 +468,8 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
             <Badge bg="light" text="dark">lib {gdsData.libraryName || '-'}</Badge>
             <Badge bg="light" text="dark">{gdsData.cells.length} cells</Badge>
             <Badge bg="light" text="dark">{gdsData.stats.referenceCount} refs</Badge>
-            <Badge bg="light" text="dark">{gdsData.stats.polygonCount} polygons</Badge>
+            <Badge bg="light" text="dark">{gdsData.stats.rectCount} rects</Badge>
+            <Badge bg="light" text="dark">{gdsData.stats.polygonCount} polys</Badge>
             <Badge bg="light" text="dark">scale {absScale.toFixed(3)} px/um</Badge>
             <div className="ms-auto d-flex gap-1">
               <Button size="sm" variant="outline-secondary" onClick={() => setZoom((z) => Math.min(200, z * 1.2))}>+</Button>
@@ -332,6 +509,11 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 checked={flattenRefs}
                 onChange={(e) => setFlattenRefs(e.target.checked)}
               />
+              {!flattenRefs && estimatedFlattenCount > FLATTEN_WARN_SHAPES && (
+                <div className="text-warning small mt-1">
+                  Large cell: flatten may be slow (est. {estimatedFlattenCount >= MAX_FLATTENED_SHAPES + 1 ? `>${MAX_FLATTENED_SHAPES.toLocaleString()}` : estimatedFlattenCount.toLocaleString()} shapes).
+                </div>
+              )}
               {renderStats.truncated && (
                 <div className="text-warning small mt-1">
                   Flattened view truncated at {MAX_FLATTENED_SHAPES.toLocaleString()} shapes.
@@ -340,6 +522,11 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               {renderStats.refsTruncated && showRefs && !flattenRefs && (
                 <div className="text-warning small mt-1">
                   Reference boxes truncated at {MAX_REFERENCE_BOXES.toLocaleString()} instances.
+                </div>
+              )}
+              {renderStats.depthLimitHit && !flattenRefs && (
+                <div className="text-warning small mt-1">
+                  Hierarchy deeper than 32 levels; some geometry may not be shown. Enable &ldquo;Flatten refs&rdquo; to display fully.
                 </div>
               )}
               <hr />
@@ -370,7 +557,12 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 onMouseDown={onMouseDown}
                 onMouseMove={onMouseMove}
                 onMouseUp={endPan}
-                onMouseLeave={() => { endPan(); setCursor(null); }}
+                onMouseLeave={() => {
+                  endPan();
+                  cursorRef.current = null;
+                  setCursor(null);
+                  if (cursorTimerRef.current) { clearTimeout(cursorTimerRef.current); cursorTimerRef.current = null; }
+                }}
                 onDoubleClick={fit}
               >
                 <canvas ref={canvasRef} className="canvas-overlay-abs" />

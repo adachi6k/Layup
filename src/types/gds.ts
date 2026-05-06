@@ -10,6 +10,15 @@ export interface GDSBBox {
   y2: number;
 }
 
+export interface GDSRect {
+  layer: number;
+  datatype: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
 export interface GDSPolygon {
   layer: number;
   datatype: number;
@@ -44,6 +53,7 @@ export interface GDSReference {
 
 export interface GDSCell {
   name: string;
+  rects: GDSRect[];
   polygons: GDSPolygon[];
   paths: GDSPath[];
   references: GDSReference[];
@@ -61,6 +71,7 @@ export interface GDSData {
   topCellName: string;
   bbox: GDSBBox;
   stats: {
+    rectCount: number;
     polygonCount: number;
     pathCount: number;
     referenceCount: number;
