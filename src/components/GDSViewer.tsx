@@ -13,13 +13,13 @@ interface GDSViewerProps {
 const MAX_FLATTENED_SHAPES = 250_000;
 const FLATTEN_WARN_SHAPES = 50_000;
 const MAX_REFERENCE_BOXES = 75_000;
-/** Switch Auto detail to simplified rendering below this screen scale, or whenever dragging. */
+/** Switch Auto detail to simplified rendering below this screen scale, or whenever dragging; 18 px/um keeps overview pans responsive before fine geometry is legible. */
 const DETAIL_SCALE_THRESHOLD_PX_PER_UM = 18;
-/** Draw only the highest numbered visible layers in simplified mode; these are usually top routing/outline layers. */
+/** Draw only the highest numbered visible layers in simplified mode; this pairs with bbox rendering to create a progressive overview before full detail. */
 const SIMPLIFIED_MAX_LAYERS = 8;
-/** Draw one aggregate array bbox instead of many instance bboxes above this visible instance count. */
+/** Draw one aggregate array bbox instead of many instance bboxes above this visible instance count to cap per-frame outline work. */
 const SIMPLIFIED_ARRAY_AGGREGATE_INSTANCES = 1_500;
-/** Cull individual primitives smaller than this many screen pixels in simplified mode. */
+/** Cull individual primitives smaller than this many screen pixels in simplified mode because they cannot contribute visible detail. */
 const SIMPLIFIED_SHAPE_SKIP_PX = 0.45;
 /** Maximum GDS hierarchy depth the hierarchy renderer will descend before stopping. */
 const MAX_HIERARCHY_DEPTH = 32;
@@ -60,6 +60,7 @@ interface VisibleArrayInstances {
   colEnd: number;
   rowStart: number;
   rowEnd: number;
+  visibleInstanceCount: number;
   axisAlignedGridAxes: { columnAxis: Axis; rowAxis: Axis } | null;
 }
 
@@ -148,7 +149,15 @@ const getVisibleArrayInstances = (
     [rowStart, rowEnd] = rowRange;
   }
 
-  return { arrayBBox, colStart, colEnd, rowStart, rowEnd, axisAlignedGridAxes };
+  return {
+    arrayBBox,
+    colStart,
+    colEnd,
+    rowStart,
+    rowEnd,
+    visibleInstanceCount: (colEnd - colStart + 1) * (rowEnd - rowStart + 1),
+    axisAlignedGridAxes,
+  };
 };
 
 /**
@@ -292,7 +301,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   const renderLayers = useMemo(() => {
     const selected = allLayers.filter((layer) => visibleLayers.has(layer));
     if (!simplifiedActive || selected.length <= SIMPLIFIED_MAX_LAYERS) return new Set(selected);
-    return new Set([...selected].sort((a, b) => b - a).slice(0, SIMPLIFIED_MAX_LAYERS));
+    return new Set(selected.sort((a, b) => b - a).slice(0, SIMPLIFIED_MAX_LAYERS));
   }, [allLayers, simplifiedActive, visibleLayers]);
 
   // ResizeObserver is handled by useCanvasViewport
@@ -469,12 +478,14 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           const baseInstBBox = transformBBox(target.bbox, ref.transform);
           const visibleArray = getVisibleArrayInstances(baseInstBBox, columnVector, rowVector, columns, rows, localVisibleBBox);
           if (!visibleArray) continue;
-          const { arrayBBox, colStart, colEnd, rowStart, rowEnd, axisAlignedGridAxes } = visibleArray;
+          const { arrayBBox, colStart, colEnd, rowStart, rowEnd, visibleInstanceCount, axisAlignedGridAxes } = visibleArray;
 
           if (simplifiedActive) {
-            const visibleInstanceCount = (colEnd - colStart + 1) * (rowEnd - rowStart + 1);
             const arrayScreenPx = effectiveScale * Math.max(arrayBBox.x2 - arrayBBox.x1, arrayBBox.y2 - arrayBBox.y1);
-            if (visibleInstanceCount > SIMPLIFIED_ARRAY_AGGREGATE_INSTANCES || arrayScreenPx < LOD_BBOX_PX || depth > 0) {
+            const shouldAggregateLargeArray = visibleInstanceCount > SIMPLIFIED_ARRAY_AGGREGATE_INSTANCES;
+            const isTooSmallForDetail = arrayScreenPx < LOD_BBOX_PX;
+            const isNestedReference = depth > 0;
+            if (shouldAggregateLargeArray || isTooSmallForDetail || isNestedReference) {
               lodSimplified += visibleInstanceCount;
               setStroke(darkBg ? LOD_BBOX_COLOR_DARK : LOD_BBOX_COLOR_LIGHT, darkBg ? 0.55 : 0.45);
               ctx.lineWidth = 1 / effectiveScale;
@@ -594,19 +605,18 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
         const baseInstBBox = transformBBox(target.bbox, ref.transform);
         const visibleArray = getVisibleArrayInstances(baseInstBBox, columnVector, rowVector, columns, rows, visibleBBox);
         if (!visibleArray) continue;
-        const { arrayBBox, colStart, colEnd, rowStart, rowEnd, axisAlignedGridAxes } = visibleArray;
+        const { arrayBBox, colStart, colEnd, rowStart, rowEnd, visibleInstanceCount, axisAlignedGridAxes } = visibleArray;
 
-        const visibleInstanceCount = (colEnd - colStart + 1) * (rowEnd - rowStart + 1);
         if (visibleInstanceCount > SIMPLIFIED_ARRAY_AGGREGATE_INSTANCES) {
           refsVisible += visibleInstanceCount;
           ctx.strokeRect(arrayBBox.x1, arrayBBox.y1, bboxWidth(arrayBBox), bboxHeight(arrayBBox));
           continue;
         }
 
-        referenceBoxes:
+        instanceLoop:
         for (let row = rowStart; row <= rowEnd; row += 1) {
           for (let col = colStart; col <= colEnd; col += 1) {
-            if (refsVisible >= MAX_REFERENCE_BOXES) { refsTruncated = true; break referenceBoxes; }
+            if (refsVisible >= MAX_REFERENCE_BOXES) { refsTruncated = true; break instanceLoop; }
             const dx = columnVector.x * col + rowVector.x * row;
             const dy = columnVector.y * col + rowVector.y * row;
             const instBBox = translateBBox(baseInstBBox, dx, dy);
