@@ -222,7 +222,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
         for(let i=0; i<cell.length; i++){
           const idx = cell[i];
           if(matches[idx] < 0) continue;
-          if(matchedComponentIndices==null) matchedComponentIndices = [];
+          if(matchedComponentIndices===null) matchedComponentIndices = [];
           matchedComponentIndices.push(idx);
         }
         return matchedComponentIndices ? new Uint32Array(matchedComponentIndices) : emptyCell;
@@ -361,15 +361,15 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
       const gy1 = Math.min(grid.rows-1, Math.floor((bottomWorld - grid.originY)/grid.cellSize));
       let visibleComponentCount = 0;
       let exceedsDetailLimit = false;
-      const seenComponentIndices = visibleComponentSetRef.current;
-      seenComponentIndices.clear();
+      const visibleComponentSet = visibleComponentSetRef.current;
+      visibleComponentSet.clear();
       countVisible: for(let gy=gy0; gy<=gy1; gy++){
         for(let gx=gx0; gx<=gx1; gx++){
           const arr = grid.cells[gy*grid.cols+gx];
           for(let i=0; i<arr.length; i++){
             const idx = arr[i];
-            if(seenComponentIndices.has(idx)) continue;
-            seenComponentIndices.add(idx);
+            if(visibleComponentSet.has(idx)) continue;
+            visibleComponentSet.add(idx);
             const pc = precomputedRef.current[idx];
             if(!pc || pc.x+pc.w < leftWorld || pc.x > rightWorld || pc.y+pc.h < topWorld || pc.y > bottomWorld) continue;
             visibleComponentCount++;
@@ -380,7 +380,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
           }
         }
       }
-      seenComponentIndices.clear();
+      visibleComponentSet.clear();
       const useOverview = exceedsDetailLimit || absScale < DEF_OVERVIEW_MAX_SCALE;
 
       if(useOverview){
@@ -402,8 +402,8 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
           }
         }
         const dotsPerCell = Math.max(1, Math.floor(DEF_OVERVIEW_DOT_LIMIT / Math.max(1, nonEmptyCells)));
-        const highlightCellBudget = highlightedNonEmptyCells > 0 ? DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT / highlightedNonEmptyCells : 1;
-        const highlightDotsPerCell = Math.max(1, Math.ceil(highlightCellBudget));
+        const highlightCellBudget = highlightedNonEmptyCells > 0 ? DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT / highlightedNonEmptyCells : 0;
+        const highlightDotsPerCell = highlightedNonEmptyCells > 0 ? Math.max(1, Math.ceil(highlightCellBudget)) : 0;
         const dotSize = DEF_OVERVIEW_DOT_PX / absScale;
         const halfDot = dotSize/2;
         const highlightDotSize = (DEF_OVERVIEW_DOT_PX*2.2) / absScale;
@@ -420,7 +420,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
             occupiedCellsPath.rect(cellX, cellY, grid.cellSize, grid.cellSize);
             const step = Math.max(1, Math.ceil(arr.length / dotsPerCell));
             const highlightArr = hasHighlightCells ? highlightCells[cellIndex] : undefined;
-            const highlightStep = highlightArr ? Math.max(1, Math.ceil(highlightArr.length / highlightDotsPerCell)) : 1;
+            const highlightStep = highlightArr && highlightArr.length>0 && highlightDotsPerCell>0 ? Math.max(1, Math.ceil(highlightArr.length / highlightDotsPerCell)) : 1;
             for(let i=0; highlightArr && i<highlightArr.length && highlightDotsDrawn<DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT; i+=highlightStep){
               const idx = highlightArr[i];
               const pc = precomputedRef.current[idx];
