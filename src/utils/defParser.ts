@@ -1,9 +1,13 @@
-// DEF parser for DIEAREA, COMPONENTS, PINS, and NET connectivity.
+// DEF parser for DIEAREA, COMPONENTS, PINS, and optional NET connectivity.
 import type { DEFData, DEFComponent, DEFPin, DEFNet } from '../types/def';
 
-export function parseDEF(content: string): DEFData {
+interface DEFParseOptions {
+  parseNets?: boolean;
+}
+
+export function parseDEF(content: string, options: DEFParseOptions = {}): DEFData {
+  const parseNets = options.parseNets ?? false;
   const rawLines = content.split(/\r?\n/);
-  const lines = rawLines.map(l => l.replace(/\t/g,' ').trim()).filter(l => l.length>0);
   let version = '';
   let units = 1000; // default fallback
   let dieArea = { x1: 0, y1: 0, x2: 0, y2: 0 };
@@ -17,6 +21,7 @@ export function parseDEF(content: string): DEFData {
   // NETS (接続のみ)
   const nets: DEFNet[] = [];
   let inNets = false;
+  let inSpecialNets = false;
   let currentNet: { name:string; conns: {inst?:string; pin:string; isTopPin:boolean}[] } | null = null;
 
   const flushComponent = () => {
@@ -55,8 +60,9 @@ export function parseDEF(content: string): DEFData {
     currentNet=null;
   };
 
-  for(let i=0;i<lines.length;i++){
-    const line = lines[i];
+  for(let i=0;i<rawLines.length;i++){
+    const line = rawLines[i].replace(/\t/g,' ').trim();
+    if(line.length===0) continue;
     if(line.startsWith('VERSION')){
       const m=line.match(/VERSION\s+([0-9.]+)/); if(m) version=m[1];
     } else if(line.startsWith('UNITS DISTANCE MICRONS')){
@@ -75,6 +81,10 @@ export function parseDEF(content: string): DEFData {
     } else if(inPins && line.startsWith('END PINS')){
       if(currentPin) flushPin();
       inPins=false; continue;
+    } else if(line.startsWith('SPECIALNETS ')){
+      inSpecialNets=true; continue;
+    } else if(inSpecialNets && line.startsWith('END SPECIALNETS')){
+      inSpecialNets=false; continue;
     } else if(line.startsWith('NETS ')){
       inNets=true; continue;
     } else if(inNets && line.startsWith('END NETS')){
@@ -94,14 +104,18 @@ export function parseDEF(content: string): DEFData {
       const m=line.match(/-\s+(\S+)/);
       if(m){ currentPin={ name:m[1], block:[line] }; if(/;\s*$/.test(line)) flushPin(); }
       continue;
-    } else if(inNets && line.startsWith('-')){
+    } else if(inNets && parseNets && line.startsWith('-')){
       if(currentNet) flushNet();
       // ネット開始: - <netName> ( inst pin ) ( PIN <pinName> ) ... ;
       const m=line.match(/-\s+(\S+)/);
       if(m){ currentNet={ name:m[1], conns:[] }; }
       // この行に既に接続が含まれる場合もあるので後で共通処理
     }
-    if(inNets && currentNet){
+    if(inSpecialNets) {
+      continue;
+    } else if(inNets && !parseNets) {
+      continue;
+    } else if(inNets && currentNet){
       // 接続トークン抽出: ( inst pin ) or ( PIN <name> )
       const connRe=/\(\s*(PIN|\S+)\s+(\S+)\s*\)/g; let cm:RegExpExecArray|null;
       while((cm=connRe.exec(line))){

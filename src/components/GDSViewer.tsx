@@ -10,14 +10,17 @@ interface GDSViewerProps {
   filename: string;
 }
 
-interface RefBox {
-  name: string;
-  bbox: GDSBBox;
-}
-
 const MAX_FLATTENED_SHAPES = 250_000;
 const FLATTEN_WARN_SHAPES = 50_000;
 const MAX_REFERENCE_BOXES = 75_000;
+/** Switch Auto detail to simplified rendering below this screen scale, or whenever panning; 18 px/um keeps overview pans responsive before fine geometry is legible. */
+const DETAIL_SCALE_THRESHOLD_PX_PER_UM = 18;
+/** Draw only the highest numbered visible layers in simplified mode; this pairs with bbox rendering to create a progressive overview before full detail. */
+const SIMPLIFIED_MAX_LAYERS = 8;
+/** Draw one aggregate array bbox instead of many instance bboxes above this visible instance count to cap per-frame outline work. */
+const SIMPLIFIED_ARRAY_AGGREGATE_INSTANCES = 1_500;
+/** Cull individual primitives smaller than this many screen pixels in simplified mode because they cannot contribute visible detail. */
+const SIMPLIFIED_SHAPE_SKIP_PX = 0.45;
 /** Maximum GDS hierarchy depth the hierarchy renderer will descend before stopping. */
 const MAX_HIERARCHY_DEPTH = 32;
 /** Throttle interval (ms) for React state updates driven by frequent events (mousemove, draw). */
@@ -32,7 +35,10 @@ const AXIS_EPSILON = 1e-12;
 const LOD_SKIP_PX = 1;
 const LOD_BBOX_PX = 8;
 const LOD_BBOX_ALPHA = 0.45;
-const LOD_BBOX_COLOR = '#888';
+const LOD_BBOX_COLOR_LIGHT = '#777';
+const LOD_BBOX_COLOR_DARK = '#aaa';
+
+type DetailMode = 'auto' | 'full' | 'simplified';
 
 const layerColorCache = new Map<number, string>();
 const layerColor = (layer: number): string => {
@@ -47,6 +53,16 @@ const layerColor = (layer: number): string => {
 };
 
 type Axis = 'x' | 'y';
+
+interface VisibleArrayInstances {
+  arrayBBox: GDSBBox;
+  colStart: number;
+  colEnd: number;
+  rowStart: number;
+  rowEnd: number;
+  visibleInstanceCount: number;
+  axisAlignedGridAxes: { columnAxis: Axis; rowAxis: Axis } | null;
+}
 
 const bboxWidth = (bbox: GDSBBox) => Math.max(1e-9, bbox.x2 - bbox.x1);
 const bboxHeight = (bbox: GDSBBox) => Math.max(1e-9, bbox.y2 - bbox.y1);
@@ -102,6 +118,46 @@ const getAxisAlignedGridAxes = (columnVector: { x: number; y: number }, rowVecto
   if (isAxisAlignedStep(columnVector, 'x') && isAxisAlignedStep(rowVector, 'y')) return { columnAxis: 'x', rowAxis: 'y' };
   if (isAxisAlignedStep(columnVector, 'y') && isAxisAlignedStep(rowVector, 'x')) return { columnAxis: 'y', rowAxis: 'x' };
   return null;
+};
+
+const getVisibleArrayInstances = (
+  baseInstBBox: GDSBBox,
+  columnVector: { x: number; y: number },
+  rowVector: { x: number; y: number },
+  columns: number,
+  rows: number,
+  visibleBBox: GDSBBox,
+): VisibleArrayInstances | null => {
+  const arrayBBox = translatedArrayBBox(baseInstBBox, columnVector, rowVector, columns, rows);
+  if (!intersects(arrayBBox, visibleBBox)) return null;
+
+  let colStart = 0;
+  let colEnd = columns - 1;
+  let rowStart = 0;
+  let rowEnd = rows - 1;
+  const axisAlignedGridAxes = getAxisAlignedGridAxes(columnVector, rowVector);
+
+  if (axisAlignedGridAxes) {
+    const colRange = axisAlignedGridAxes.columnAxis === 'x'
+      ? computeVisibleIndexRange(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, visibleBBox.x1, visibleBBox.x2)
+      : computeVisibleIndexRange(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, visibleBBox.y1, visibleBBox.y2);
+    const rowRange = axisAlignedGridAxes.rowAxis === 'x'
+      ? computeVisibleIndexRange(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, visibleBBox.x1, visibleBBox.x2)
+      : computeVisibleIndexRange(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, visibleBBox.y1, visibleBBox.y2);
+    if (!colRange || !rowRange) return null;
+    [colStart, colEnd] = colRange;
+    [rowStart, rowEnd] = rowRange;
+  }
+
+  return {
+    arrayBBox,
+    colStart,
+    colEnd,
+    rowStart,
+    rowEnd,
+    visibleInstanceCount: (colEnd - colStart + 1) * (rowEnd - rowStart + 1),
+    axisAlignedGridAxes,
+  };
 };
 
 /**
@@ -191,38 +247,14 @@ const estimateFlattenedShapeCount = (data: GDSData, cellName: string, cap: numbe
   return estimate(cellName, 0);
 };
 
-const collectReferenceBoxes = (cell: GDSCell, data: GDSData): { boxes: RefBox[]; truncated: boolean } => {
-  const boxes: RefBox[] = [];
-  let truncated = false;
-  for (const ref of cell.references) {
-    const target = data.cellMap.get(ref.name);
-    if (!target?.bbox) continue;
-    const columns = ref.columns ?? 1;
-    const rows = ref.rows ?? 1;
-    for (let row = 0; row < rows; row += 1) {
-      for (let col = 0; col < columns; col += 1) {
-        if (boxes.length >= MAX_REFERENCE_BOXES) {
-          truncated = true;
-          return { boxes, truncated };
-        }
-        const dx = (ref.columnVector?.x ?? 0) * col + (ref.rowVector?.x ?? 0) * row;
-        const dy = (ref.columnVector?.y ?? 0) * col + (ref.rowVector?.y ?? 0) * row;
-        boxes.push({
-          name: ref.name,
-          bbox: transformBBox(target.bbox, { ...ref.transform, x: ref.transform.x + dx, y: ref.transform.y + dy }),
-        });
-      }
-    }
-  }
-  return { boxes, truncated };
-};
-
 export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
-  const { containerRef, canvasRef, containerSize, zoom, setZoom, pan, setPan, isPanning, startPan, updatePan, endPan } = useCanvasViewport();
+  const { containerRef, canvasRef, containerSize, zoom, setZoom, pan, setPan, isPanning, panStartRef, startPan, endPan } = useCanvasViewport();
   const [selectedCellName, setSelectedCellName] = useState(gdsData.topCellName);
   const [visibleLayers, setVisibleLayers] = useState<Set<number>>(new Set());
   const [showRefs, setShowRefs] = useState(true);
   const [flattenRefs, setFlattenRefs] = useState(false);
+  const [darkBg, setDarkBg] = useState(true);
+  const [detailMode, setDetailMode] = useState<DetailMode>('auto');
   const [baseScale, setBaseScale] = useState(1);
 
   // Cursor: keep actual coords in a ref (updated every mousemove) and throttle the
@@ -239,17 +271,54 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   // rAF handle: cancel any pending frame before scheduling a new one so rapid state
   // updates (e.g. every mousemove during panning) only produce one draw per display frame.
   const rafIdRef = useRef<number | null>(null);
+  const panPreviewRafRef = useRef<number | null>(null);
+  const panPreviewOffsetRef = useRef({ x: 0, y: 0 });
+  const panPreviewRef = useRef<{ x: number; y: number } | null>(null);
+  const clearPreviewAfterDrawRef = useRef(false);
+
+  const setCanvasPreviewOffset = useCallback((x: number, y: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.style.transform = x === 0 && y === 0 ? '' : `translate3d(${x}px, ${y}px, 0)`;
+    canvas.style.willChange = x === 0 && y === 0 ? '' : 'transform';
+  }, [canvasRef]);
+
+  const resetCanvasPreview = useCallback(() => {
+    if (panPreviewRafRef.current !== null) {
+      cancelAnimationFrame(panPreviewRafRef.current);
+      panPreviewRafRef.current = null;
+    }
+    panPreviewOffsetRef.current = { x: 0, y: 0 };
+    panPreviewRef.current = null;
+    setCanvasPreviewOffset(0, 0);
+  }, [setCanvasPreviewOffset]);
+
+  const scheduleCanvasPreview = useCallback((x: number, y: number) => {
+    panPreviewOffsetRef.current = { x, y };
+    if (panPreviewRafRef.current !== null) return;
+    panPreviewRafRef.current = requestAnimationFrame(() => {
+      panPreviewRafRef.current = null;
+      const offset = panPreviewOffsetRef.current;
+      setCanvasPreviewOffset(offset.x, offset.y);
+    });
+  }, [setCanvasPreviewOffset]);
 
   // Clean up throttle timers on unmount.
   useEffect(() => () => {
     if (cursorTimerRef.current) clearTimeout(cursorTimerRef.current);
     if (renderStatsTimerRef.current) clearTimeout(renderStatsTimerRef.current);
     if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current);
-  }, []);
+    resetCanvasPreview();
+  }, [resetCanvasPreview]);
 
   const selectedCell = gdsData.cellMap.get(selectedCellName) ?? gdsData.cellMap.get(gdsData.topCellName) ?? gdsData.cells[0];
   const selectedBBox = selectedCell?.bbox ?? gdsData.bbox;
   const absScale = baseScale * zoom;
+  const simplifiedActive = useMemo(() => {
+    if (detailMode === 'simplified') return true;
+    if (detailMode === 'full') return false;
+    return isPanning || absScale < DETAIL_SCALE_THRESHOLD_PX_PER_UM;
+  }, [absScale, detailMode, isPanning]);
 
   const allLayers = useMemo(() => {
     const layers = new Set<number>();
@@ -261,9 +330,17 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     return Array.from(layers).sort((a, b) => a - b);
   }, [gdsData]);
 
+  const simplifiedLayerPriority = useMemo(() => [...allLayers].sort((a, b) => b - a), [allLayers]);
+
   useEffect(() => {
     setVisibleLayers(new Set(allLayers));
   }, [allLayers]);
+
+  const renderLayers = useMemo(() => {
+    const selected = (simplifiedActive ? simplifiedLayerPriority : allLayers).filter((layer) => visibleLayers.has(layer));
+    if (!simplifiedActive || selected.length <= SIMPLIFIED_MAX_LAYERS) return new Set(selected);
+    return new Set(selected.slice(0, SIMPLIFIED_MAX_LAYERS));
+  }, [allLayers, simplifiedActive, simplifiedLayerPriority, visibleLayers]);
 
   // ResizeObserver is handled by useCanvasViewport
 
@@ -280,7 +357,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
       x: (containerSize.width - bboxWidth(selectedBBox) * safeScale) / 2,
       y: (containerSize.height - bboxHeight(selectedBBox) * safeScale) / 2,
     });
-  }, [containerSize.height, containerSize.width, selectedBBox]);
+  }, [containerSize.height, containerSize.width, selectedBBox, setPan, setZoom]);
 
   useEffect(() => {
     fit();
@@ -299,13 +376,10 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     [gdsData, selectedCellName],
   );
 
-  const refBoxResult = useMemo(() => (selectedCell ? collectReferenceBoxes(selectedCell, gdsData) : { boxes: [], truncated: false }), [gdsData, selectedCell]);
-  const refBoxes = refBoxResult.boxes;
-
-  const screenToWorld = useCallback((sx: number, sy: number) => ({
-    x: selectedBBox.x1 + (sx - pan.x) / absScale,
-    y: selectedBBox.y2 - (sy - pan.y) / absScale,
-  }), [absScale, pan.x, pan.y, selectedBBox.x1, selectedBBox.y2]);
+  const screenToWorld = useCallback((sx: number, sy: number, viewportPan = pan) => ({
+    x: selectedBBox.x1 + (sx - viewportPan.x) / absScale,
+    y: selectedBBox.y2 - (sy - viewportPan.y) / absScale,
+  }), [absScale, pan, selectedBBox.x1, selectedBBox.y2]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -321,7 +395,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     ctx.save();
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, cssW, cssH);
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = darkBg ? '#000000' : '#ffffff';
     ctx.fillRect(0, 0, cssW, cssH);
 
     const visibleBBox: GDSBBox = {
@@ -338,7 +412,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
 
     ctx.save();
     ctx.lineWidth = 1 / absScale;
-    ctx.strokeStyle = '#222';
+    ctx.strokeStyle = darkBg ? '#d0d0d0' : '#222';
     ctx.setLineDash([8 / absScale, 6 / absScale]);
     ctx.strokeRect(selectedBBox.x1, selectedBBox.y1, bboxWidth(selectedBBox), bboxHeight(selectedBBox));
     ctx.setLineDash([]);
@@ -349,6 +423,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     let refsVisible = 0;
     let lodCulled = 0;
     let lodSimplified = 0;
+    let refsTruncated = false;
     let depthLimitHit = false;
 
     // Canvas state tracking: avoid redundant style/alpha assignments, which are
@@ -370,17 +445,21 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     if (flattenRefs && flattened) {
       // Flatten mode: draw pre-flattened polygons and paths directly (all in world coords).
       for (const polygon of flattened.polygons) {
-        if (!visibleLayers.has(polygon.layer)) continue;
+        if (!renderLayers.has(polygon.layer)) continue;
         if (!intersects(polygon.bbox, visibleBBox)) { culled += 1; continue; }
+        const polygonScreenPx = absScale * Math.max(polygon.bbox.x2 - polygon.bbox.x1, polygon.bbox.y2 - polygon.bbox.y1);
+        if (simplifiedActive && polygonScreenPx < SIMPLIFIED_SHAPE_SKIP_PX) { lodCulled += 1; continue; }
         visible += 1;
-        setFill(layerColor(polygon.layer), 0.68);
+        setFill(layerColor(polygon.layer), simplifiedActive ? 0.42 : 0.68);
         renderPolygon(ctx, polygon);
       }
       for (const path of flattened.paths) {
-        if (!visibleLayers.has(path.layer)) continue;
+        if (!renderLayers.has(path.layer)) continue;
         if (!intersects(path.bbox, visibleBBox)) { culled += 1; continue; }
+        const pathScreenPx = absScale * Math.max(path.bbox.x2 - path.bbox.x1, path.bbox.y2 - path.bbox.y1);
+        if (simplifiedActive && pathScreenPx < SIMPLIFIED_SHAPE_SKIP_PX) { lodCulled += 1; continue; }
         visible += 1;
-        setStroke(layerColor(path.layer), 0.8);
+        setStroke(layerColor(path.layer), simplifiedActive ? 0.55 : 0.8);
         renderPath(ctx, path, absScale);
       }
     } else if (selectedCell) {
@@ -394,29 +473,35 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
 
         // Draw rects
         for (const rect of cell.rects) {
-          if (!visibleLayers.has(rect.layer)) continue;
+          if (!renderLayers.has(rect.layer)) continue;
           if (!intersects(rect, localVisibleBBox)) { culled += 1; continue; }
+          const rectScreenPx = effectiveScale * Math.max(rect.x2 - rect.x1, rect.y2 - rect.y1);
+          if (simplifiedActive && rectScreenPx < SIMPLIFIED_SHAPE_SKIP_PX) { lodCulled += 1; continue; }
           visible += 1;
-          setFill(layerColor(rect.layer), 0.68);
+          setFill(layerColor(rect.layer), simplifiedActive ? 0.42 : 0.68);
           renderRect(ctx, rect);
         }
 
         // Draw polygons
         for (const polygon of cell.polygons) {
-          if (!visibleLayers.has(polygon.layer)) continue;
+          if (!renderLayers.has(polygon.layer)) continue;
           if (!intersects(polygon.bbox, localVisibleBBox)) { culled += 1; continue; }
+          const polygonScreenPx = effectiveScale * Math.max(polygon.bbox.x2 - polygon.bbox.x1, polygon.bbox.y2 - polygon.bbox.y1);
+          if (simplifiedActive && polygonScreenPx < SIMPLIFIED_SHAPE_SKIP_PX) { lodCulled += 1; continue; }
           visible += 1;
-          setFill(layerColor(polygon.layer), 0.68);
+          setFill(layerColor(polygon.layer), simplifiedActive ? 0.42 : 0.68);
           renderPolygon(ctx, polygon);
         }
 
         // Draw paths — use effectiveScale so the 1px minimum stroke is correct at this
         // depth even when the canvas has accumulated magnification from parent transforms.
         for (const path of cell.paths) {
-          if (!visibleLayers.has(path.layer)) continue;
+          if (!renderLayers.has(path.layer)) continue;
           if (!intersects(path.bbox, localVisibleBBox)) { culled += 1; continue; }
+          const pathScreenPx = effectiveScale * Math.max(path.bbox.x2 - path.bbox.x1, path.bbox.y2 - path.bbox.y1);
+          if (simplifiedActive && pathScreenPx < SIMPLIFIED_SHAPE_SKIP_PX) { lodCulled += 1; continue; }
           visible += 1;
-          setStroke(layerColor(path.layer), 0.8);
+          setStroke(layerColor(path.layer), simplifiedActive ? 0.55 : 0.8);
           renderPath(ctx, path, effectiveScale);
         }
 
@@ -429,25 +514,35 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
           const columnVector = ref.columnVector ?? { x: 0, y: 0 };
           const rowVector = ref.rowVector ?? { x: 0, y: 0 };
           const baseInstBBox = transformBBox(target.bbox, ref.transform);
-          const arrayBBox = translatedArrayBBox(baseInstBBox, columnVector, rowVector, columns, rows);
-          if (!intersects(arrayBBox, localVisibleBBox)) continue;
+          const visibleArray = getVisibleArrayInstances(baseInstBBox, columnVector, rowVector, columns, rows, localVisibleBBox);
+          if (!visibleArray) continue;
+          const { arrayBBox, colStart, colEnd, rowStart, rowEnd, visibleInstanceCount, axisAlignedGridAxes } = visibleArray;
 
-          let colStart = 0;
-          let colEnd = columns - 1;
-          let rowStart = 0;
-          let rowEnd = rows - 1;
-          const axisAlignedGridAxes = getAxisAlignedGridAxes(columnVector, rowVector);
-
-          if (axisAlignedGridAxes) {
-            const colRange = axisAlignedGridAxes.columnAxis === 'x'
-              ? computeVisibleIndexRange(columns, columnVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
-              : computeVisibleIndexRange(columns, columnVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
-            const rowRange = axisAlignedGridAxes.rowAxis === 'x'
-              ? computeVisibleIndexRange(rows, rowVector.x, baseInstBBox.x1, baseInstBBox.x2, localVisibleBBox.x1, localVisibleBBox.x2)
-              : computeVisibleIndexRange(rows, rowVector.y, baseInstBBox.y1, baseInstBBox.y2, localVisibleBBox.y1, localVisibleBBox.y2);
-            if (!colRange || !rowRange) continue;
-            [colStart, colEnd] = colRange;
-            [rowStart, rowEnd] = rowRange;
+          if (simplifiedActive) {
+            const arrayScreenPx = effectiveScale * Math.max(arrayBBox.x2 - arrayBBox.x1, arrayBBox.y2 - arrayBBox.y1);
+            const shouldAggregateLargeArray = visibleInstanceCount > SIMPLIFIED_ARRAY_AGGREGATE_INSTANCES;
+            const isTooSmallForDetail = arrayScreenPx < LOD_BBOX_PX;
+            const isNestedReference = depth > 0;
+            if (shouldAggregateLargeArray || isTooSmallForDetail || isNestedReference) {
+              lodSimplified += visibleInstanceCount;
+              setStroke(darkBg ? LOD_BBOX_COLOR_DARK : LOD_BBOX_COLOR_LIGHT, darkBg ? 0.55 : 0.45);
+              ctx.lineWidth = 1 / effectiveScale;
+              ctx.strokeRect(arrayBBox.x1, arrayBBox.y1, arrayBBox.x2 - arrayBBox.x1, arrayBBox.y2 - arrayBBox.y1);
+              continue;
+            }
+            setStroke(darkBg ? LOD_BBOX_COLOR_DARK : LOD_BBOX_COLOR_LIGHT, darkBg ? 0.55 : 0.45);
+            ctx.lineWidth = 1 / effectiveScale;
+            for (let row = rowStart; row <= rowEnd; row += 1) {
+              for (let col = colStart; col <= colEnd; col += 1) {
+                const dx = columnVector.x * col + rowVector.x * row;
+                const dy = columnVector.y * col + rowVector.y * row;
+                const instBBox = translateBBox(baseInstBBox, dx, dy);
+                if (!axisAlignedGridAxes && !intersects(instBBox, localVisibleBBox)) continue;
+                lodSimplified += 1;
+                ctx.strokeRect(instBBox.x1, instBBox.y1, instBBox.x2 - instBBox.x1, instBBox.y2 - instBBox.y1);
+              }
+            }
+            continue;
           }
 
           // Fast path: translation-only transform (angle=0, mag=1, no reflect).
@@ -476,7 +571,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               if (instScreenPx < LOD_BBOX_PX) {
                 // Instance is very small; draw a simple bbox outline instead of recursing.
                 lodSimplified += 1;
-                setStroke(LOD_BBOX_COLOR, LOD_BBOX_ALPHA);
+                setStroke(darkBg ? LOD_BBOX_COLOR_DARK : LOD_BBOX_COLOR_LIGHT, LOD_BBOX_ALPHA);
                 ctx.lineWidth = 1 / effectiveScale;
                 ctx.strokeRect(instBBox.x1, instBBox.y1, instBBox.x2 - instBBox.x1, instBBox.y2 - instBBox.y1);
                 continue;
@@ -534,19 +629,51 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     }
     ctx.globalAlpha = 1;
 
-    if (showRefs && !flattenRefs) {
+    if (showRefs && !flattenRefs && selectedCell && !simplifiedActive) {
       ctx.save();
       ctx.lineWidth = 1 / absScale;
-      ctx.strokeStyle = 'rgba(30,30,30,0.35)';
-      refBoxes.forEach((ref) => {
-        if (!intersects(ref.bbox, visibleBBox)) return;
-        refsVisible += 1;
-        ctx.strokeRect(ref.bbox.x1, ref.bbox.y1, bboxWidth(ref.bbox), bboxHeight(ref.bbox));
-      });
+      ctx.strokeStyle = darkBg ? 'rgba(255,255,255,0.38)' : 'rgba(30,30,30,0.35)';
+      for (const ref of selectedCell.references) {
+        const target = gdsData.cellMap.get(ref.name);
+        if (!target?.bbox) continue;
+        const columns = ref.columns ?? 1;
+        const rows = ref.rows ?? 1;
+        const columnVector = ref.columnVector ?? { x: 0, y: 0 };
+        const rowVector = ref.rowVector ?? { x: 0, y: 0 };
+        const baseInstBBox = transformBBox(target.bbox, ref.transform);
+        const visibleArray = getVisibleArrayInstances(baseInstBBox, columnVector, rowVector, columns, rows, visibleBBox);
+        if (!visibleArray) continue;
+        const { arrayBBox, colStart, colEnd, rowStart, rowEnd, visibleInstanceCount, axisAlignedGridAxes } = visibleArray;
+
+        if (visibleInstanceCount > SIMPLIFIED_ARRAY_AGGREGATE_INSTANCES) {
+          refsVisible += visibleInstanceCount;
+          ctx.strokeRect(arrayBBox.x1, arrayBBox.y1, bboxWidth(arrayBBox), bboxHeight(arrayBBox));
+          continue;
+        }
+
+        for (let row = rowStart; row <= rowEnd; row += 1) {
+          for (let col = colStart; col <= colEnd; col += 1) {
+            if (refsVisible >= MAX_REFERENCE_BOXES) { refsTruncated = true; break; }
+            const dx = columnVector.x * col + rowVector.x * row;
+            const dy = columnVector.y * col + rowVector.y * row;
+            const instBBox = translateBBox(baseInstBBox, dx, dy);
+            if (!axisAlignedGridAxes && !intersects(instBBox, visibleBBox)) continue;
+            refsVisible += 1;
+            ctx.strokeRect(instBBox.x1, instBBox.y1, bboxWidth(instBBox), bboxHeight(instBBox));
+          }
+          if (refsTruncated) break;
+        }
+        if (refsTruncated) break;
+      }
       ctx.restore();
     }
 
     ctx.restore();
+
+    if (clearPreviewAfterDrawRef.current) {
+      clearPreviewAfterDrawRef.current = false;
+      resetCanvasPreview();
+    }
 
     // Throttle renderStats state update to ~100 ms to avoid excess re-renders on every frame.
     const newStats = {
@@ -557,7 +684,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
       lodSimplified,
       drawMs: performance.now() - start,
       truncated: Boolean(flattened?.truncated),
-      refsTruncated: refBoxResult.truncated,
+      refsTruncated,
       depthLimitHit,
     };
     renderStatsLatestRef.current = newStats;
@@ -567,7 +694,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
         setRenderStats(renderStatsLatestRef.current);
       }, THROTTLE_MS);
     }
-  }, [absScale, canvasRef, containerSize.height, containerSize.width, flattened, flattenRefs, gdsData.cellMap, pan.x, pan.y, refBoxResult.truncated, refBoxes, selectedBBox, selectedCell, showRefs, visibleLayers]);
+  }, [absScale, canvasRef, containerSize.height, containerSize.width, darkBg, flattened, flattenRefs, gdsData.cellMap, pan.x, pan.y, renderLayers, resetCanvasPreview, selectedBBox, selectedCell, showRefs, simplifiedActive]);
 
   useEffect(() => {
     // Cancel any pending frame from the previous render so rapid state updates
@@ -603,12 +730,29 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     });
   };
 
-  const onMouseDown = (e: React.MouseEvent) => { startPan(e); };
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0 && e.button !== 1) return;
+    e.preventDefault();
+    resetCanvasPreview();
+    startPan(e);
+  };
 
   const onMouseMove = (e: React.MouseEvent) => {
+    let viewportPan = panPreviewRef.current ?? pan;
+    if (isPanning && panStartRef.current) {
+      const start = panStartRef.current;
+      const nextPan = {
+        x: start.origX + (e.clientX - start.x),
+        y: start.origY + (e.clientY - start.y),
+      };
+      panPreviewRef.current = nextPan;
+      viewportPan = nextPan;
+      scheduleCanvasPreview(nextPan.x - start.origX, nextPan.y - start.origY);
+    }
+
     const rect = containerRef.current?.getBoundingClientRect();
     if (rect) {
-      const pos = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+      const pos = screenToWorld(e.clientX - rect.left, e.clientY - rect.top, viewportPan);
       cursorRef.current = pos;
       // Throttle the React state update to ~100 ms to avoid excess re-renders on every mousemove.
       if (!cursorTimerRef.current) {
@@ -618,7 +762,17 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
         }, THROTTLE_MS);
       }
     }
-    if (isPanning) updatePan(e.clientX, e.clientY);
+  };
+
+  const commitPanPreview = () => {
+    const nextPan = panPreviewRef.current;
+    if (nextPan) {
+      clearPreviewAfterDrawRef.current = true;
+      setPan(nextPan);
+    } else {
+      resetCanvasPreview();
+    }
+    endPan();
   };
 
   const toggleLayer = (layer: number) => {
@@ -681,6 +835,24 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 checked={flattenRefs}
                 onChange={(e) => setFlattenRefs(e.target.checked)}
               />
+              <Form.Check
+                type="switch"
+                id="gds-dark-bg"
+                label="Dark background"
+                checked={darkBg}
+                onChange={(e) => setDarkBg(e.target.checked)}
+              />
+              <Form.Label className="small mt-2 mb-1">Detail mode</Form.Label>
+              <Form.Select size="sm" value={detailMode} onChange={(e) => setDetailMode(e.target.value as DetailMode)}>
+                <option value="auto">Auto simplify</option>
+                <option value="simplified">Simplified</option>
+                <option value="full">Full detail</option>
+              </Form.Select>
+              {simplifiedActive && (
+                <div className="text-muted small mt-1">
+                  Simplified: drawing limited layers and bbox outlines for smoother pan/zoom.
+                </div>
+              )}
               {!flattenRefs && estimatedFlattenCount > FLATTEN_WARN_SHAPES && (
                 <div className="text-warning small mt-1">
                   Large cell: flatten may be slow (est. {estimatedFlattenCount >= MAX_FLATTENED_SHAPES + 1 ? `>${MAX_FLATTENED_SHAPES.toLocaleString()}` : estimatedFlattenCount.toLocaleString()} shapes).
@@ -706,6 +878,9 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
                 <Button size="sm" variant="outline-secondary" onClick={() => setVisibleLayers(new Set(allLayers))}>All</Button>
                 <Button size="sm" variant="outline-secondary" onClick={() => setVisibleLayers(new Set())}>None</Button>
               </div>
+              {simplifiedActive && renderLayers.size < visibleLayers.size && (
+                <div className="text-muted small mb-2">Rendering top {renderLayers.size} visible layers while simplified.</div>
+              )}
               <ListGroup variant="flush" className="small">
                 {allLayers.map((layer) => (
                   <ListGroup.Item key={layer} className="px-0 py-1 d-flex align-items-center gap-2">
@@ -723,14 +898,14 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
             <Card.Body className="p-0 position-relative">
               <div
                 ref={containerRef}
-                style={{ cursor: isPanning ? 'grabbing' : 'grab' }}
-                className="w-100 h-100 overflow-hidden"
+                style={{ cursor: isPanning ? 'grabbing' : 'grab', background: darkBg ? '#000' : '#fff' }}
+                className="gds-canvas-container w-100 h-100 overflow-hidden"
                 onWheel={handleWheel}
                 onMouseDown={onMouseDown}
                 onMouseMove={onMouseMove}
-                onMouseUp={endPan}
+                onMouseUp={commitPanPreview}
                 onMouseLeave={() => {
-                  endPan();
+                  commitPanPreview();
                   cursorRef.current = null;
                   setCursor(null);
                   if (cursorTimerRef.current) { clearTimeout(cursorTimerRef.current); cursorTimerRef.current = null; }
@@ -739,7 +914,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               >
                 <canvas ref={canvasRef} className="canvas-overlay-abs" />
                 {(import.meta.env.DEV || cursor) && (
-                  <div className="position-absolute bottom-0 start-0 m-2 small bg-light border rounded px-2 py-1">
+                  <div className={`position-absolute bottom-0 start-0 m-2 small border rounded px-2 py-1 ${darkBg ? 'text-light bg-dark' : 'bg-light'}`}>
                     {import.meta.env.DEV && <>visible {renderStats.visible.toLocaleString()} / refs {renderStats.refsVisible.toLocaleString()} / culled {renderStats.culled.toLocaleString()} / lod-skip {renderStats.lodCulled.toLocaleString()} / lod-bbox {renderStats.lodSimplified.toLocaleString()} / {renderStats.drawMs.toFixed(1)} ms</>}
                     {cursor && <>{import.meta.env.DEV && ' / '}x {cursor.x.toFixed(2)} um, y {cursor.y.toFixed(2)} um</>}
                   </div>
