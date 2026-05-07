@@ -371,7 +371,8 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
             if(visibleComponentSet.has(idx)) continue;
             visibleComponentSet.add(idx);
             const pc = precomputedRef.current[idx];
-            if(!pc || pc.x+pc.w < leftWorld || pc.x > rightWorld || pc.y+pc.h < topWorld || pc.y > bottomWorld) continue;
+            const outsideViewport = !pc || pc.x+pc.w < leftWorld || pc.x > rightWorld || pc.y+pc.h < topWorld || pc.y > bottomWorld;
+            if(outsideViewport) continue;
             visibleComponentCount++;
             if(visibleComponentCount > DEF_DETAIL_COMPONENT_LIMIT){
               exceedsDetailLimit = true;
@@ -402,8 +403,9 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
           }
         }
         const dotsPerCell = Math.max(1, Math.floor(DEF_OVERVIEW_DOT_LIMIT / Math.max(1, nonEmptyCells)));
-        const highlightCellBudget = highlightedNonEmptyCells > 0 ? DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT / highlightedNonEmptyCells : 0;
-        const highlightDotsPerCell = highlightedNonEmptyCells > 0 ? Math.max(1, Math.ceil(highlightCellBudget)) : 0;
+        const highlightDotsPerCell = highlightedNonEmptyCells > 0
+          ? Math.max(1, Math.ceil(DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT / highlightedNonEmptyCells))
+          : 0;
         const dotSize = DEF_OVERVIEW_DOT_PX / absScale;
         const halfDot = dotSize/2;
         const highlightDotSize = (DEF_OVERVIEW_DOT_PX*2.2) / absScale;
@@ -420,7 +422,10 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
             occupiedCellsPath.rect(cellX, cellY, grid.cellSize, grid.cellSize);
             const step = Math.max(1, Math.ceil(arr.length / dotsPerCell));
             const highlightArr = hasHighlightCells ? highlightCells[cellIndex] : undefined;
-            const highlightStep = highlightArr && highlightArr.length>0 && highlightDotsPerCell>0 ? Math.max(1, Math.ceil(highlightArr.length / highlightDotsPerCell)) : 1;
+            let highlightStep = 1;
+            if(highlightArr && highlightArr.length>0 && highlightDotsPerCell>0){
+              highlightStep = Math.max(1, Math.ceil(highlightArr.length / highlightDotsPerCell));
+            }
             for(let i=0; highlightArr && i<highlightArr.length && highlightDotsDrawn<DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT; i+=highlightStep){
               const idx = highlightArr[i];
               const pc = precomputedRef.current[idx];
