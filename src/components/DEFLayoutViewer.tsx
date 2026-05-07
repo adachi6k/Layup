@@ -86,6 +86,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   const cursorLatestRef = useRef<{x:number;y:number}|null>(null);
   const hoveredLatestRef = useRef<DEFComponentDraw|null>(null);
   const highlightMatchesRef = useRef<Int16Array>(new Int16Array());
+  const highlightGridCellsRef = useRef<Uint32Array[]>([]);
   const [showDebug, setShowDebug] = useState(false);
   const [showHighlightPanel, setShowHighlightPanel] = useState(false);
   const [highlightRules, setHighlightRules] = useState<HighlightRule[]>(loadHighlightRules);
@@ -212,6 +213,22 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
       }
     }
     highlightMatchesRef.current = matches;
+    const grid = gridRef.current;
+    if(grid && compiledHighlightRules.length>0){
+      const emptyCell = new Uint32Array(0);
+      highlightGridCellsRef.current = grid.cells.map((cell)=>{
+        let highlighted: number[]|null = null;
+        for(let i=0; i<cell.length; i++){
+          const idx = cell[i];
+          if(matches[idx] < 0) continue;
+          if(highlighted==null) highlighted = [];
+          highlighted.push(idx);
+        }
+        return highlighted ? new Uint32Array(highlighted) : emptyCell;
+      });
+    } else {
+      highlightGridCellsRef.current = [];
+    }
     setHighlightCounts(counts);
     setHighlightMatchVersion(version=>version+1);
   },[compiledHighlightRules, highlightRules.length, placedComponentCount]);
@@ -341,13 +358,27 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
       const gy0 = Math.max(0, Math.floor((topWorld - grid.originY)/grid.cellSize));
       const gx1 = Math.min(grid.cols-1, Math.floor((rightWorld - grid.originX)/grid.cellSize));
       const gy1 = Math.min(grid.rows-1, Math.floor((bottomWorld - grid.originY)/grid.cellSize));
-      let roughVisibleComponents = 0;
-      for(let gy=gy0; gy<=gy1; gy++){
+      let visibleComponentCount = 0;
+      let visibleCountComplete = true;
+      const seenVisible = new Set<number>();
+      countVisible: for(let gy=gy0; gy<=gy1; gy++){
         for(let gx=gx0; gx<=gx1; gx++){
-          roughVisibleComponents += grid.cells[gy*grid.cols+gx].length;
+          const arr = grid.cells[gy*grid.cols+gx];
+          for(let i=0; i<arr.length; i++){
+            const idx = arr[i];
+            if(seenVisible.has(idx)) continue;
+            seenVisible.add(idx);
+            const pc = precomputedRef.current[idx];
+            if(!pc || pc.x+pc.w < leftWorld || pc.x > rightWorld || pc.y+pc.h < topWorld || pc.y > bottomWorld) continue;
+            visibleComponentCount++;
+            if(visibleComponentCount > DEF_DETAIL_COMPONENT_LIMIT){
+              visibleCountComplete = false;
+              break countVisible;
+            }
+          }
         }
       }
-      const useOverview = roughVisibleComponents > DEF_DETAIL_COMPONENT_LIMIT || absScale < DEF_OVERVIEW_MAX_SCALE;
+      const useOverview = !visibleCountComplete || absScale < DEF_OVERVIEW_MAX_SCALE;
 
       if(useOverview){
         const dotPaths:Record<string,Path2D> = {};
@@ -355,14 +386,20 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
         const getDotPath=(color:string)=>{ return dotPaths[color]||(dotPaths[color]=new Path2D()); };
         const occupiedCellsPath = new Path2D();
         let nonEmptyCells = 0;
+        let highlightedNonEmptyCells = 0;
+        const highlightCells = highlightGridCellsRef.current;
+        const hasHighlightCells = highlightCells.length === grid.cells.length;
         for(let gy=gy0; gy<=gy1; gy++){
           for(let gx=gx0; gx<=gx1; gx++){
-            const count = grid.cells[gy*grid.cols+gx].length;
+            const cellIndex = gy*grid.cols+gx;
+            const count = grid.cells[cellIndex].length;
             if(count===0) continue;
             nonEmptyCells++;
+            if(hasHighlightCells && highlightCells[cellIndex].length>0) highlightedNonEmptyCells++;
           }
         }
         const dotsPerCell = Math.max(1, Math.floor(DEF_OVERVIEW_DOT_LIMIT / Math.max(1, nonEmptyCells)));
+        const highlightDotsPerCell = Math.max(1, Math.floor(DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT / Math.max(1, highlightedNonEmptyCells)));
         const dotSize = DEF_OVERVIEW_DOT_PX / absScale;
         const halfDot = dotSize/2;
         const highlightDotSize = (DEF_OVERVIEW_DOT_PX*2.2) / absScale;
@@ -371,16 +408,20 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
         let highlightDotsDrawn = 0;
         for(let gy=gy0; gy<=gy1; gy++){
           for(let gx=gx0; gx<=gx1; gx++){
-            const arr = grid.cells[gy*grid.cols+gx];
+            const cellIndex = gy*grid.cols+gx;
+            const arr = grid.cells[cellIndex];
             if(arr.length===0) continue;
             const cellX = grid.originX + gx*grid.cellSize;
             const cellY = grid.originY + gy*grid.cellSize;
             occupiedCellsPath.rect(cellX, cellY, grid.cellSize, grid.cellSize);
             const step = Math.max(1, Math.ceil(arr.length / dotsPerCell));
-            for(let i=0; i<arr.length && highlightDotsDrawn<DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT; i++){
-              const pc = precomputedRef.current[arr[i]];
+            const highlightArr = hasHighlightCells ? highlightCells[cellIndex] : undefined;
+            const highlightStep = highlightArr ? Math.max(1, Math.ceil(highlightArr.length / highlightDotsPerCell)) : 1;
+            for(let i=0; highlightArr && i<highlightArr.length && highlightDotsDrawn<DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT; i+=highlightStep){
+              const idx = highlightArr[i];
+              const pc = precomputedRef.current[idx];
               if(!pc) continue;
-              const highlightColor = getHighlightColor(arr[i]);
+              const highlightColor = getHighlightColor(idx);
               if(!highlightColor) continue;
               const path = highlightedDotPaths[highlightColor] ?? (highlightedDotPaths[highlightColor]=new Path2D());
               const cx = pc.resolved ? pc.x + pc.w/2 : pc.x;
@@ -412,8 +453,8 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
           ctx.fill(path);
         });
         ctx.restore();
-        visible = roughVisibleComponents;
-        culled = Math.max(0, precomputedRef.current.length - roughVisibleComponents);
+        visible = visibleComponentCount;
+        culled = Math.max(0, precomputedRef.current.length - visibleComponentCount);
         if(import.meta.env.DEV) {
           ctx.save();
           ctx.setTransform(dpr,0,0,dpr,0,0);
@@ -421,7 +462,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
           ctx.fillRect(6,6,224,20);
           ctx.fillStyle='rgba(255,255,255,0.85)';
           ctx.font='11px system-ui, sans-serif';
-          ctx.fillText(`overview dots: ${dotsDrawn.toLocaleString()} / ${roughVisibleComponents.toLocaleString()}`,12,20);
+          ctx.fillText(`overview dots: ${dotsDrawn.toLocaleString()} / ${visibleComponentCount.toLocaleString()}${visibleCountComplete ? '' : '+'}`,12,20);
           ctx.restore();
         }
       } else {
@@ -535,6 +576,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
       pre.push({ name:c.name, macro:c.macro, resolved, x:dbuToUm(c.x), y:dbuToUm(c.y), w, h, color: colorMap[orient]||'rgba(0,123,255,0.85)', orient });
     }
     precomputedRef.current=pre;
+    highlightGridCellsRef.current = [];
     setPlacedComponentCount(pre.length);
     setUnresolvedCount(unresolved);
 
