@@ -248,12 +248,12 @@ const estimateFlattenedShapeCount = (data: GDSData, cellName: string, cap: numbe
 };
 
 export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
-  const { containerRef, canvasRef, containerSize, zoom, setZoom, pan, setPan, isPanning, startPan, updatePan, endPan } = useCanvasViewport();
+  const { containerRef, canvasRef, containerSize, zoom, setZoom, pan, setPan, isPanning, panStartRef, startPan, endPan } = useCanvasViewport();
   const [selectedCellName, setSelectedCellName] = useState(gdsData.topCellName);
   const [visibleLayers, setVisibleLayers] = useState<Set<number>>(new Set());
   const [showRefs, setShowRefs] = useState(true);
   const [flattenRefs, setFlattenRefs] = useState(false);
-  const [darkBg, setDarkBg] = useState(false);
+  const [darkBg, setDarkBg] = useState(true);
   const [detailMode, setDetailMode] = useState<DetailMode>('auto');
   const [baseScale, setBaseScale] = useState(1);
 
@@ -271,13 +271,45 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
   // rAF handle: cancel any pending frame before scheduling a new one so rapid state
   // updates (e.g. every mousemove during panning) only produce one draw per display frame.
   const rafIdRef = useRef<number | null>(null);
+  const panPreviewRafRef = useRef<number | null>(null);
+  const panPreviewOffsetRef = useRef({ x: 0, y: 0 });
+  const panPreviewRef = useRef<{ x: number; y: number } | null>(null);
+  const clearPreviewAfterDrawRef = useRef(false);
+
+  const setCanvasPreviewOffset = useCallback((x: number, y: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.style.transform = x === 0 && y === 0 ? '' : `translate3d(${x}px, ${y}px, 0)`;
+    canvas.style.willChange = x === 0 && y === 0 ? '' : 'transform';
+  }, [canvasRef]);
+
+  const resetCanvasPreview = useCallback(() => {
+    if (panPreviewRafRef.current !== null) {
+      cancelAnimationFrame(panPreviewRafRef.current);
+      panPreviewRafRef.current = null;
+    }
+    panPreviewOffsetRef.current = { x: 0, y: 0 };
+    panPreviewRef.current = null;
+    setCanvasPreviewOffset(0, 0);
+  }, [setCanvasPreviewOffset]);
+
+  const scheduleCanvasPreview = useCallback((x: number, y: number) => {
+    panPreviewOffsetRef.current = { x, y };
+    if (panPreviewRafRef.current !== null) return;
+    panPreviewRafRef.current = requestAnimationFrame(() => {
+      panPreviewRafRef.current = null;
+      const offset = panPreviewOffsetRef.current;
+      setCanvasPreviewOffset(offset.x, offset.y);
+    });
+  }, [setCanvasPreviewOffset]);
 
   // Clean up throttle timers on unmount.
   useEffect(() => () => {
     if (cursorTimerRef.current) clearTimeout(cursorTimerRef.current);
     if (renderStatsTimerRef.current) clearTimeout(renderStatsTimerRef.current);
     if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current);
-  }, []);
+    resetCanvasPreview();
+  }, [resetCanvasPreview]);
 
   const selectedCell = gdsData.cellMap.get(selectedCellName) ?? gdsData.cellMap.get(gdsData.topCellName) ?? gdsData.cells[0];
   const selectedBBox = selectedCell?.bbox ?? gdsData.bbox;
@@ -344,10 +376,10 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     [gdsData, selectedCellName],
   );
 
-  const screenToWorld = useCallback((sx: number, sy: number) => ({
-    x: selectedBBox.x1 + (sx - pan.x) / absScale,
-    y: selectedBBox.y2 - (sy - pan.y) / absScale,
-  }), [absScale, pan.x, pan.y, selectedBBox.x1, selectedBBox.y2]);
+  const screenToWorld = useCallback((sx: number, sy: number, viewportPan = pan) => ({
+    x: selectedBBox.x1 + (sx - viewportPan.x) / absScale,
+    y: selectedBBox.y2 - (sy - viewportPan.y) / absScale,
+  }), [absScale, pan, selectedBBox.x1, selectedBBox.y2]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -638,6 +670,11 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
 
     ctx.restore();
 
+    if (clearPreviewAfterDrawRef.current) {
+      clearPreviewAfterDrawRef.current = false;
+      resetCanvasPreview();
+    }
+
     // Throttle renderStats state update to ~100 ms to avoid excess re-renders on every frame.
     const newStats = {
       visible,
@@ -657,7 +694,7 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
         setRenderStats(renderStatsLatestRef.current);
       }, THROTTLE_MS);
     }
-  }, [absScale, canvasRef, containerSize.height, containerSize.width, darkBg, flattened, flattenRefs, gdsData.cellMap, pan.x, pan.y, renderLayers, selectedBBox, selectedCell, showRefs, simplifiedActive]);
+  }, [absScale, canvasRef, containerSize.height, containerSize.width, darkBg, flattened, flattenRefs, gdsData.cellMap, pan.x, pan.y, renderLayers, resetCanvasPreview, selectedBBox, selectedCell, showRefs, simplifiedActive]);
 
   useEffect(() => {
     // Cancel any pending frame from the previous render so rapid state updates
@@ -693,12 +730,29 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
     });
   };
 
-  const onMouseDown = (e: React.MouseEvent) => { startPan(e); };
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0 && e.button !== 1) return;
+    e.preventDefault();
+    resetCanvasPreview();
+    startPan(e);
+  };
 
   const onMouseMove = (e: React.MouseEvent) => {
+    let viewportPan = panPreviewRef.current ?? pan;
+    if (isPanning && panStartRef.current) {
+      const start = panStartRef.current;
+      const nextPan = {
+        x: start.origX + (e.clientX - start.x),
+        y: start.origY + (e.clientY - start.y),
+      };
+      panPreviewRef.current = nextPan;
+      viewportPan = nextPan;
+      scheduleCanvasPreview(nextPan.x - start.origX, nextPan.y - start.origY);
+    }
+
     const rect = containerRef.current?.getBoundingClientRect();
     if (rect) {
-      const pos = screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
+      const pos = screenToWorld(e.clientX - rect.left, e.clientY - rect.top, viewportPan);
       cursorRef.current = pos;
       // Throttle the React state update to ~100 ms to avoid excess re-renders on every mousemove.
       if (!cursorTimerRef.current) {
@@ -708,7 +762,17 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
         }, THROTTLE_MS);
       }
     }
-    if (isPanning) updatePan(e.clientX, e.clientY);
+  };
+
+  const commitPanPreview = () => {
+    const nextPan = panPreviewRef.current;
+    if (nextPan) {
+      clearPreviewAfterDrawRef.current = true;
+      setPan(nextPan);
+    } else {
+      resetCanvasPreview();
+    }
+    endPan();
   };
 
   const toggleLayer = (layer: number) => {
@@ -835,13 +899,13 @@ export const GDSViewer: React.FC<GDSViewerProps> = ({ gdsData, filename }) => {
               <div
                 ref={containerRef}
                 style={{ cursor: isPanning ? 'grabbing' : 'grab', background: darkBg ? '#000' : '#fff' }}
-                className="w-100 h-100 overflow-hidden"
+                className="gds-canvas-container w-100 h-100 overflow-hidden"
                 onWheel={handleWheel}
                 onMouseDown={onMouseDown}
                 onMouseMove={onMouseMove}
-                onMouseUp={endPan}
+                onMouseUp={commitPanPreview}
                 onMouseLeave={() => {
-                  endPan();
+                  commitPanPreview();
                   cursorRef.current = null;
                   setCursor(null);
                   if (cursorTimerRef.current) { clearTimeout(cursorTimerRef.current); cursorTimerRef.current = null; }

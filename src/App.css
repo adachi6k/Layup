@@ -100,13 +100,98 @@
   position: relative;
   flex: 1;
   overflow: hidden;
+  contain: paint;
+  isolation: isolate;
   border: 1px solid #ddd;
   border-radius: 4px;
+}
+
+.def-highlight-panel {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 25;
+  width: min(760px, calc(100% - 12px));
+  max-height: min(70%, 520px);
+  overflow: auto;
+  background: rgba(255, 255, 255, 0.96);
+  color: #111;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.def-highlight-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.def-highlight-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.def-highlight-rule {
+  display: grid;
+  grid-template-columns: 18px 34px minmax(70px, 0.7fr) minmax(130px, 1.8fr) 72px auto;
+  gap: 5px;
+  align-items: center;
+}
+
+.def-highlight-rule input[type='color'] {
+  width: 30px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #bbb;
+}
+
+.def-highlight-label-input,
+.def-highlight-regex-input {
+  min-width: 0;
+  height: 24px;
+  padding: 2px 6px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.def-highlight-count {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.def-highlight-rule.has-error .def-highlight-regex-input {
+  border-color: #dc3545;
+  background: #fff5f5;
+}
+
+.def-highlight-error {
+  grid-column: 4 / -1;
+  color: #dc3545;
+  font-size: 11px;
+}
+
+.def-highlight-help {
+  margin-top: 6px;
+  color: #666;
+  font-size: 11px;
 }
 
 .canvas-overlay-abs {
   position: absolute;
   inset: 0;
+}
+
+.gds-canvas-container {
+  position: relative;
+  contain: paint;
+  isolation: isolate;
 }
 
 .canvas-empty-msg {
@@ -134,6 +219,25 @@
   display: flex;
   gap: 6px;
   pointer-events: none;
+}
+
+.canvas-hover-hud {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  z-index: 15;
+  max-width: min(520px, calc(100% - 12px));
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  padding: 4px 8px;
+  font-size: 11px;
+  border: 1px solid rgba(255, 212, 0, 0.8);
+  border-radius: 4px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .canvas-perf-hud {
