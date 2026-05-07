@@ -87,6 +87,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
   const hoveredLatestRef = useRef<DEFComponentDraw|null>(null);
   const highlightMatchesRef = useRef<Int16Array>(new Int16Array());
   const highlightGridCellsRef = useRef<Uint32Array[]>([]);
+  const visibleComponentSetRef = useRef<Set<number>>(new Set());
   const [showDebug, setShowDebug] = useState(false);
   const [showHighlightPanel, setShowHighlightPanel] = useState(false);
   const [highlightRules, setHighlightRules] = useState<HighlightRule[]>(loadHighlightRules);
@@ -217,14 +218,14 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
     if(grid && compiledHighlightRules.length>0){
       const emptyCell = new Uint32Array(0);
       highlightGridCellsRef.current = grid.cells.map((cell)=>{
-        let matchedIndices: number[]|null = null;
+        let matchedComponentIndices: number[]|null = null;
         for(let i=0; i<cell.length; i++){
           const idx = cell[i];
           if(matches[idx] < 0) continue;
-          if(matchedIndices==null) matchedIndices = [];
-          matchedIndices.push(idx);
+          if(matchedComponentIndices==null) matchedComponentIndices = [];
+          matchedComponentIndices.push(idx);
         }
-        return matchedIndices ? new Uint32Array(matchedIndices) : emptyCell;
+        return matchedComponentIndices ? new Uint32Array(matchedComponentIndices) : emptyCell;
       });
     } else {
       highlightGridCellsRef.current = [];
@@ -360,7 +361,8 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
       const gy1 = Math.min(grid.rows-1, Math.floor((bottomWorld - grid.originY)/grid.cellSize));
       let visibleComponentCount = 0;
       let exceedsDetailLimit = false;
-      const seenComponentIndices = new Set<number>();
+      const seenComponentIndices = visibleComponentSetRef.current;
+      seenComponentIndices.clear();
       countVisible: for(let gy=gy0; gy<=gy1; gy++){
         for(let gx=gx0; gx<=gx1; gx++){
           const arr = grid.cells[gy*grid.cols+gx];
@@ -378,6 +380,7 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
           }
         }
       }
+      seenComponentIndices.clear();
       const useOverview = exceedsDetailLimit || absScale < DEF_OVERVIEW_MAX_SCALE;
 
       if(useOverview){
@@ -399,7 +402,8 @@ export const DEFLayoutViewer: React.FC<DEFLayoutViewerProps> = ({ def, lef }) =>
           }
         }
         const dotsPerCell = Math.max(1, Math.floor(DEF_OVERVIEW_DOT_LIMIT / Math.max(1, nonEmptyCells)));
-        const highlightDotsPerCell = highlightedNonEmptyCells > 0 ? Math.max(1, Math.ceil(DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT / highlightedNonEmptyCells)) : 1;
+        const highlightCellBudget = highlightedNonEmptyCells > 0 ? DEF_OVERVIEW_HIGHLIGHT_DOT_LIMIT / highlightedNonEmptyCells : 1;
+        const highlightDotsPerCell = Math.max(1, Math.ceil(highlightCellBudget));
         const dotSize = DEF_OVERVIEW_DOT_PX / absScale;
         const halfDot = dotSize/2;
         const highlightDotSize = (DEF_OVERVIEW_DOT_PX*2.2) / absScale;
